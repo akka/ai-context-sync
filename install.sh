@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="sync_claude_contexts.py"
-SCRIPT_SRC="https://raw.githubusercontent.com/lightbend/ai-contexts/main/${SCRIPT_NAME}"
+SCRIPT_SRC="https://raw.githubusercontent.com/akka/ai-assistant-configs/main/${SCRIPT_NAME}"
 INSTALL_DIR="${HOME}/.claude"
 INSTALL_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
 CONFIG_FILE="${INSTALL_DIR}/context-sync.conf"

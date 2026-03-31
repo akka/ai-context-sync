@@ -16,7 +16,7 @@
  */
 
 // ── Config (edit these or move to env vars) ───────────────────────────────────
-const GITHUB_REPO   = "lightbend/ai-contexts";
+const GITHUB_REPO   = "akka/ai-assistant-configs";
 const GITHUB_BRANCH = "main";
 const CACHE_TTL_SEC = 90000; // KV edge TTL (~25 hours — longer than cron interval)
 

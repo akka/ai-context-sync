@@ -13,7 +13,7 @@ Two modes — configure ONE in ~/.claude/context-sync.conf:
 
   MODE 2 — Direct GitHub access (admin / fallback):
     GITHUB_TOKEN=<bot PAT with contents:read>
-    # GITHUB_REPO=lightbend/ai-contexts
+    # GITHUB_REPO=akka/ai-assistant-configs
     # GITHUB_BRANCH=main
 
 Installed layout:
@@ -42,7 +42,7 @@ import urllib.request
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
-DEFAULT_GITHUB_REPO   = "lightbend/ai-contexts"
+DEFAULT_GITHUB_REPO   = "akka/ai-assistant-configs"
 DEFAULT_GITHUB_BRANCH = "main"
 
 CLAUDE_DIR       = pathlib.Path.home() / ".claude"

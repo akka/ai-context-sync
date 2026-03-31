@@ -10,7 +10,7 @@ employee's Claude Code installation.  Runs on a daily schedule.
 ## Architecture
 
 ```
-github.com/lightbend/ai-contexts  (private repo, bot token)
+github.com/akka/ai-assistant-configs  (private repo, bot token)
             │
             │  daily cron (07:00 UTC)
             ▼
@@ -53,7 +53,7 @@ Files are installed to `~/.claude/contexts/` and imported via `@` directives in
 
 - Cloudflare account with the `akka.io` zone
 - [Node.js](https://nodejs.org) and `npm` (for Wrangler CLI)
-- A GitHub bot PAT with `contents: read` on `lightbend/ai-contexts`
+- A GitHub bot PAT with `contents: read` on `akka/ai-assistant-configs`
 - A generated API key to distribute to employees — generate one with:
   ```bash
   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -68,12 +68,10 @@ cd worker/
 npm install -g wrangler
 wrangler login
 
-# 2. Create the KV namespace
-wrangler kv:namespace create CONTEXTS_KV
-# → Copy the returned `id` into wrangler.toml: kv_namespaces[].id
-
-wrangler kv:namespace create CONTEXTS_KV --preview
-# → Copy the returned `id` into wrangler.toml: kv_namespaces[].preview_id
+# 2. Set up wrangler.toml
+cp wrangler.toml.example wrangler.toml
+# → Fill in the KV namespace ID — find it in 1Password: "ai-context-sync token and stuff"
+# → Or create a fresh namespace: wrangler kv namespace create CONTEXTS_KV
 
 # 3. Store secrets (never committed to git)
 wrangler secret put GITHUB_TOKEN      # paste the bot PAT
@@ -92,7 +90,7 @@ curl -X POST https://claude-contexts.akka.io/sync \
 
 **DNS setup:** Add a CNAME in the Cloudflare dashboard for `akka.io`:
 ```
-claude-contexts.akka.io  →  claude-context-sync.<account>.workers.dev
+claude-contexts.akka.io  →  claude-context-sync.lightbend.workers.dev
 ```
 
 ### Worker endpoints
@@ -107,6 +105,19 @@ claude-contexts.akka.io  →  claude-context-sync.<account>.workers.dev
 The Worker syncs automatically via cron at **07:00 UTC** daily (before employees'
 machines sync at 08:00 local time).
 
+### Updating the Worker
+
+After changing `worker/index.js` or `worker/wrangler.toml`, redeploy and trigger a manual sync:
+
+```bash
+cd worker/
+wrangler deploy
+
+# Repopulate KV from the (possibly updated) GitHub repo
+curl -X POST https://claude-contexts.akka.io/sync \
+  -H "Authorization: Bearer YOUR_CONTEXT_API_KEY"
+```
+
 ---
 
 ## Part 2 — Install on employee machines
@@ -116,21 +127,21 @@ Employees need only the **API key** — no GitHub account.
 ### macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lightbend/ai-contexts/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/install.sh \
   | bash -s -- --key YOUR_CONTEXT_API_KEY
 ```
 
 ### Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lightbend/ai-contexts/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/install.sh \
   | bash -s -- --key YOUR_CONTEXT_API_KEY
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lightbend/ai-contexts/main/install.ps1" `
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/akka/ai-context-sync/main/install.ps1" `
   -OutFile install.ps1 -UseBasicParsing
 .\install.ps1 -Key "YOUR_CONTEXT_API_KEY"
 ```
