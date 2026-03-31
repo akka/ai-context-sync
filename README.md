@@ -205,22 +205,34 @@ python "%USERPROFILE%\.claude\sync_claude_contexts.py"
 
 ---
 
-## Removing the schedule
+## Uninstalling
 
-**macOS:**
+### macOS / Linux
+
 ```bash
-launchctl unload ~/Library/LaunchAgents/io.akka.claude-context-sync.plist
-rm ~/Library/LaunchAgents/io.akka.claude-context-sync.plist
+# Remove schedule, script, and config (leaves context files and backups in place)
+curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/uninstall.sh | bash
+
+# Also remove downloaded context files and CLAUDE.md backups
+curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/uninstall.sh | bash -s -- --purge
 ```
 
-**Linux:**
-```bash
-crontab -l | grep -v "sync_claude_contexts" | crontab -
-```
+### Windows
 
-**Windows:**
 ```powershell
 Unregister-ScheduledTask -TaskName ClaudeContextSync -Confirm:$false
+Remove-Item "$env:USERPROFILE\.claude\sync_claude_contexts.py" -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.claude\context-sync.conf" -ErrorAction SilentlyContinue
+```
+
+## CLAUDE.md backups
+
+Before every sync, the script backs up `~/.claude/CLAUDE.md` to `~/.claude/backups/`, keeping the
+last 5 copies. To restore a previous version:
+
+```bash
+ls ~/.claude/backups/
+cp ~/.claude/backups/CLAUDE.md.<timestamp> ~/.claude/CLAUDE.md
 ```
 
 ---

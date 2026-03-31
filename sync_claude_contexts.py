@@ -51,6 +51,8 @@ CONTEXTS_DIR     = CLAUDE_DIR / CONTEXTS_SUBDIR
 CLAUDE_MD        = CLAUDE_DIR / "CLAUDE.md"
 CONFIG_FILE      = CLAUDE_DIR / "context-sync.conf"
 LOG_FILE         = CLAUDE_DIR / "context-sync.log"
+BACKUPS_DIR      = CLAUDE_DIR / "backups"
+MAX_BACKUPS      = 5
 
 SYNC_BLOCK_START = "<!-- claude-context-sync:start -->"
 SYNC_BLOCK_END   = "<!-- claude-context-sync:end -->"
@@ -224,6 +226,26 @@ def sync_from_github(
     update_claude_md(root_paths, dept_map, dry_run)
     log.info("✓ Sync complete.")
 
+# ── CLAUDE.md backup ──────────────────────────────────────────────────────────
+
+def backup_claude_md() -> None:
+    """Back up CLAUDE.md before modification, keeping the last MAX_BACKUPS copies."""
+    if not CLAUDE_MD.exists():
+        return
+    import datetime
+    BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = BACKUPS_DIR / f"CLAUDE.md.{timestamp}"
+    backup_path.write_text(CLAUDE_MD.read_text(encoding="utf-8"), encoding="utf-8")
+    log.debug("Backed up CLAUDE.md → %s", backup_path)
+
+    # Prune old backups, keeping only the most recent MAX_BACKUPS
+    backups = sorted(BACKUPS_DIR.glob("CLAUDE.md.*"))
+    for old in backups[:-MAX_BACKUPS]:
+        old.unlink()
+        log.debug("Removed old backup %s", old)
+
+
 # ── CLAUDE.md management ───────────────────────────────────────────────────────
 
 def build_sync_block(root_paths: list[str], dept_map: dict[str, list[str]]) -> str:
@@ -273,6 +295,7 @@ def update_claude_md(
     if dry_run:
         log.info("DRY RUN — would write %s:\n%s", CLAUDE_MD, new_content)
     else:
+        backup_claude_md()
         CLAUDE_MD.write_text(new_content, encoding="utf-8")
         log.info("%s %s", action, CLAUDE_MD)
 
