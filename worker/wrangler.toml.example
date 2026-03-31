@@ -4,18 +4,17 @@ workers_dev = false                         # only serve on the custom route bel
 compatibility_date = "2024-01-01"
 
 # Custom domain — set up a DNS CNAME in the Cloudflare dashboard:
-#   claude-contexts.akka.io  →  <worker>.workers.dev
+#   claude-contexts.akka.io  →  claude-context-sync.lightbend.workers.dev
 routes = [
   { pattern = "claude-contexts.akka.io/*", zone_name = "akka.io" }
 ]
 
 # KV namespace — create with:
-#   wrangler kv:namespace create CONTEXTS_KV
-#   wrangler kv:namespace create CONTEXTS_KV --preview
+#   wrangler kv namespace create CONTEXTS_KV
+# The ID for the existing namespace is in 1Password: "ai-context-sync token and stuff"
 [[kv_namespaces]]
-binding     = "CONTEXTS_KV"
-id          = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-preview_id  = "REPLACE_WITH_YOUR_KV_PREVIEW_NAMESPACE_ID"
+binding = "CONTEXTS_KV"
+id      = "REPLACE_WITH_KV_NAMESPACE_ID"
 
 # Cron trigger — syncs GitHub → KV every day at 07:00 UTC
 # (runs before employees' machines sync at 08:00 local time)
@@ -28,5 +27,5 @@ crons = ["0 7 * * *"]
 #
 # [vars] is for non-secret env vars only — do not put tokens here
 [vars]
-# GITHUB_REPO   = "lightbend/ai-contexts"   # override in index.js if needed
+# GITHUB_REPO   = "akka/ai-assistant-configs"   # override in index.js if needed
 # GITHUB_BRANCH = "main"
