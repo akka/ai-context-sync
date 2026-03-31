@@ -59,6 +59,17 @@ echo ""
 PYTHON=$(check_python)
 info "Using Python: $($PYTHON --version)"
 
+# On macOS, Python.org installs ship without system certificates.
+# Run the bundled Install Certificates script if present.
+if [[ "${OS:-}" == "Darwin" ]] || [[ "$(uname -s)" == "Darwin" ]]; then
+  PYTHON_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+  CERT_CMD="/Applications/Python ${PYTHON_VER}/Install Certificates.command"
+  if [[ -f "$CERT_CMD" ]]; then
+    info "Installing Python certificates (macOS)…"
+    bash "$CERT_CMD" > /dev/null 2>&1 && info "Certificates installed." || warn "Certificate install failed — SSL errors may occur."
+  fi
+fi
+
 mkdir -p "${INSTALL_DIR}"
 
 # Download (or copy if running locally) the sync script
