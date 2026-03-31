@@ -325,7 +325,7 @@ def main() -> None:
     repo       = resolve("GITHUB_REPO",    args.repo,         config) or DEFAULT_GITHUB_REPO
     branch     = resolve("GITHUB_BRANCH",  args.branch,       config) or DEFAULT_GITHUB_BRANCH
 
-    if not dry_run_only := args.dry_run:
+    if not args.dry_run:
         CONTEXTS_DIR.mkdir(parents=True, exist_ok=True)
 
     if source_url:
