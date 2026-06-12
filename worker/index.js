@@ -16,9 +16,14 @@
  */
 
 // ── Config (edit these or move to env vars) ───────────────────────────────────
-const GITHUB_REPO   = "akka/ai-assistant-configs";
+const GITHUB_REPO   = "akka/org-ai-contexts";
 const GITHUB_BRANCH = "main";
 const CACHE_TTL_SEC = 90000; // KV edge TTL (~25 hours — longer than cron interval)
+
+// Paths to include from the repo (by top-level directory or exact name).
+// Everything else is ignored — repo metadata, generated bundles, etc.
+const INCLUDE_TOPS  = new Set(["context", "skills", "prompts"]);
+const INCLUDE_EXACT = new Set(["index.md"]);
 
 // ── KV key constants ──────────────────────────────────────────────────────────
 const MANIFEST_KEY  = "__manifest__";
@@ -76,9 +81,11 @@ async function syncFromGitHub(env) {
     env.GITHUB_TOKEN
   );
 
-  const mdBlobs = tree.tree.filter(
-    (item) => item.type === "blob" && item.path.endsWith(".md")
-  );
+  const mdBlobs = tree.tree.filter((item) => {
+    if (item.type !== "blob" || !item.path.endsWith(".md")) return false;
+    const top = item.path.split("/")[0];
+    return INCLUDE_EXACT.has(item.path) || INCLUDE_TOPS.has(top);
+  });
 
   console.log(`Found ${mdBlobs.length} .md file(s)`);
 
