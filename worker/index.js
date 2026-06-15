@@ -60,17 +60,6 @@ async function ghFetch(path, token) {
   return resp.json();
 }
 
-async function fetchRaw(url, token) {
-  const resp = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "User-Agent": "akka-claude-context-worker/1.0",
-    },
-  });
-  if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
-  return resp.text();
-}
-
 // ── Sync logic (runs on cron) ─────────────────────────────────────────────────
 
 async function syncFromGitHub(env) {
@@ -91,23 +80,25 @@ async function syncFromGitHub(env) {
 
   const manifest = { files: {}, synced_at: new Date().toISOString() };
 
-  // Download each file and store individually in KV
-  await Promise.all(
-    mdBlobs.map(async (blob) => {
-      const rawUrl = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${blob.path}`;
-      const content = await fetchRaw(rawUrl, env.GITHUB_TOKEN);
+  // Fetch each blob's content via the Git blobs API (returns base64, one request per file).
+  // Sequential to stay well under Cloudflare's subrequest limit.
+  for (const blob of mdBlobs) {
+    const data = await ghFetch(
+      `/repos/${GITHUB_REPO}/git/blobs/${blob.sha}`,
+      env.GITHUB_TOKEN
+    );
+    const content = atob(data.content.replace(/\n/g, ""));
 
-      const kvKey = `file:${blob.path}`;
-      await env.CONTEXTS_KV.put(kvKey, content, { expirationTtl: CACHE_TTL_SEC });
+    const kvKey = `file:${blob.path}`;
+    await env.CONTEXTS_KV.put(kvKey, content, { expirationTtl: CACHE_TTL_SEC });
 
-      manifest.files[blob.path] = {
-        path: blob.path,
-        size: content.length,
-        // Content is also inlined for clients that want a single-request download
-        content,
-      };
-    })
-  );
+    manifest.files[blob.path] = {
+      path: blob.path,
+      size: content.length,
+      content,
+    };
+    console.log(`  stored ${blob.path} (${content.length} bytes)`);
+  }
 
   // Store manifest (includes all file content for one-shot client downloads)
   await env.CONTEXTS_KV.put(MANIFEST_KEY, JSON.stringify(manifest), {
