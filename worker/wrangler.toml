@@ -20,9 +20,6 @@ id      = "e7aa19ccc0534ae3a547d92085c878dd"
 [triggers]
 crons = ["0 7 * * *"]
 
-[limits]
-subrequests = 1000
-
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
