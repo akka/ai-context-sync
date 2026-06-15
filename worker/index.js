@@ -60,11 +60,33 @@ async function ghFetch(path, token) {
   return resp.json();
 }
 
+async function ghGraphQL(query, token) {
+  const resp = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "akka-claude-context-worker/1.0",
+    },
+    body: JSON.stringify({ query }),
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`GitHub GraphQL ${resp.status}: ${body.slice(0, 200)}`);
+  }
+  const json = await resp.json();
+  if (json.errors) {
+    throw new Error(`GitHub GraphQL errors: ${JSON.stringify(json.errors)}`);
+  }
+  return json.data;
+}
+
 // ── Sync logic (runs on cron) ─────────────────────────────────────────────────
 
 async function syncFromGitHub(env) {
   console.log(`Syncing from github.com/${GITHUB_REPO} (${GITHUB_BRANCH})…`);
 
+  // Subrequest 1: REST tree — gets all file paths and SHAs in one call
   const tree = await ghFetch(
     `/repos/${GITHUB_REPO}/git/trees/${GITHUB_BRANCH}?recursive=1`,
     env.GITHUB_TOKEN
@@ -76,31 +98,39 @@ async function syncFromGitHub(env) {
     return INCLUDE_EXACT.has(item.path) || INCLUDE_TOPS.has(top);
   });
 
-  console.log(`Found ${mdBlobs.length} .md file(s)`);
+  console.log(`Found ${mdBlobs.length} matching .md file(s)`);
+
+  if (mdBlobs.length === 0) {
+    const manifest = { files: {}, synced_at: new Date().toISOString() };
+    await env.CONTEXTS_KV.put(MANIFEST_KEY, JSON.stringify(manifest), { expirationTtl: CACHE_TTL_SEC });
+    await env.CONTEXTS_KV.put(SYNCED_AT_KEY, manifest.synced_at);
+    return manifest;
+  }
+
+  // Subrequest 2: GraphQL with one alias per blob — fetches all file contents in one request
+  const aliases = mdBlobs.map((b, i) =>
+    `f${i}: object(oid: "${b.sha}") { ... on Blob { text } }`
+  ).join("\n");
+
+  const gqlData = await ghGraphQL(`
+    {
+      repository(owner: "${GITHUB_REPO.split("/")[0]}", name: "${GITHUB_REPO.split("/")[1]}") {
+        ${aliases}
+      }
+    }
+  `, env.GITHUB_TOKEN);
 
   const manifest = { files: {}, synced_at: new Date().toISOString() };
 
-  // Fetch each blob's content via the Git blobs API (returns base64, one request per file).
-  // Sequential to stay well under Cloudflare's subrequest limit.
-  for (const blob of mdBlobs) {
-    const data = await ghFetch(
-      `/repos/${GITHUB_REPO}/git/blobs/${blob.sha}`,
-      env.GITHUB_TOKEN
-    );
-    const content = atob(data.content.replace(/\n/g, ""));
-
-    const kvKey = `file:${blob.path}`;
-    await env.CONTEXTS_KV.put(kvKey, content, { expirationTtl: CACHE_TTL_SEC });
-
-    manifest.files[blob.path] = {
-      path: blob.path,
-      size: content.length,
-      content,
-    };
-    console.log(`  stored ${blob.path} (${content.length} bytes)`);
+  // KV puts are binding calls, not fetch subrequests — they don't count toward the limit
+  for (let i = 0; i < mdBlobs.length; i++) {
+    const path = mdBlobs[i].path;
+    const text = gqlData?.repository?.[`f${i}`]?.text ?? "";
+    await env.CONTEXTS_KV.put(`file:${path}`, text, { expirationTtl: CACHE_TTL_SEC });
+    manifest.files[path] = { path, size: text.length, content: text };
+    console.log(`  stored ${path} (${text.length} bytes)`);
   }
 
-  // Store manifest (includes all file content for one-shot client downloads)
   await env.CONTEXTS_KV.put(MANIFEST_KEY, JSON.stringify(manifest), {
     expirationTtl: CACHE_TTL_SEC,
   });
