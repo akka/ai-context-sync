@@ -64,7 +64,7 @@ if (Test-Path $LocalScript) {
     Copy-Item $LocalScript $InstallPath -Force
 } else {
     Info "Downloading $ScriptName from GitHub…"
-    $RawUrl = "https://raw.githubusercontent.com/akka/org-ai-contexts/main/bin/$ScriptName"
+    $RawUrl = "https://raw.githubusercontent.com/akka/ai-context-sync/main/$ScriptName"
     try {
         Invoke-WebRequest -Uri $RawUrl -OutFile $InstallPath -UseBasicParsing
     } catch {
