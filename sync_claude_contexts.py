@@ -213,10 +213,13 @@ def backup_existing_files(dry_run: bool) -> None:
 
     log.debug("Backed up %d file(s) → %s", len(managed), backup_root)
 
-    # Prune oldest backups, keep only MAX_BACKUPS
+    # Prune oldest backups, keep only MAX_BACKUPS (entries may be dirs or stray files)
     snapshots = sorted(BACKUPS_DIR.iterdir())
     for old in snapshots[:-MAX_BACKUPS]:
-        shutil.rmtree(old)
+        if old.is_dir():
+            shutil.rmtree(old)
+        else:
+            old.unlink()
         log.debug("Removed old backup %s", old)
 
 
