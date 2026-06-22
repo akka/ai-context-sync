@@ -13,19 +13,25 @@ Two modes — configure ONE in ~/.claude/context-sync.conf:
 
   MODE 2 — Direct GitHub access (admin / fallback):
     GITHUB_TOKEN=<bot PAT with contents:read>
-    # GITHUB_REPO=akka/ai-assistant-configs
+    # GITHUB_REPO=akka/org-ai-contexts
     # GITHUB_BRANCH=main
 
 Installed layout:
   ~/.claude/
     CLAUDE.md                ← managed @import block prepended by this script
     contexts/
-      company.md
-      marketing/
-        context.md
-      support/
-        context.md
-      ...
+      index.md               ← navigation guide (what's available and when to use it)
+      context/
+        company.md
+        platform.md
+        ...
+    skills/
+      engineering/
+        SKILL.md             ← activatable via /engineering
+      infosec/
+        ...
+    commands/
+      support-triage.md      ← slash command /support-triage
 
 The script is idempotent — safe to run repeatedly via a scheduler.
 """
@@ -36,23 +42,27 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import sys
 import urllib.error
 import urllib.request
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
-DEFAULT_GITHUB_REPO   = "akka/ai-assistant-configs"
+DEFAULT_GITHUB_REPO   = "akka/org-ai-contexts"
 DEFAULT_GITHUB_BRANCH = "main"
 
 CLAUDE_DIR       = pathlib.Path.home() / ".claude"
-CONTEXTS_SUBDIR  = "contexts"
-CONTEXTS_DIR     = CLAUDE_DIR / CONTEXTS_SUBDIR
+CONTEXTS_DIR     = CLAUDE_DIR / "contexts"
+SKILLS_DIR       = CLAUDE_DIR / "skills"
+COMMANDS_DIR     = CLAUDE_DIR / "commands"
 CLAUDE_MD        = CLAUDE_DIR / "CLAUDE.md"
 CONFIG_FILE      = CLAUDE_DIR / "context-sync.conf"
 LOG_FILE         = CLAUDE_DIR / "context-sync.log"
 BACKUPS_DIR      = CLAUDE_DIR / "backups"
 MAX_BACKUPS      = 5
+
+CONTEXTS_SUBDIR  = "contexts"
 
 SYNC_BLOCK_START = "<!-- claude-context-sync:start -->"
 SYNC_BLOCK_END   = "<!-- claude-context-sync:end -->"
@@ -115,6 +125,117 @@ def http_get(url: str, headers: dict[str, str]) -> bytes:
     except urllib.error.URLError as exc:
         raise SystemExit(f"[ERROR] Network error: {exc.reason}") from exc
 
+# ── File classification ────────────────────────────────────────────────────────
+
+def has_skill_frontmatter(content: str) -> bool:
+    """Return True if the file has a YAML frontmatter block containing 'name:'."""
+    if not content.startswith("---"):
+        return False
+    end = content.find("\n---", 3)
+    if end == -1:
+        return False
+    frontmatter = content[3:end]
+    return bool(re.search(r"^name:\s*\S", frontmatter, re.MULTILINE))
+
+
+def classify_file(path: str, content: str) -> tuple[str, pathlib.Path] | None:
+    """
+    Return (kind, dest_path) for a repo path, or None to skip.
+
+    Kinds:
+      "context"  → ~/.claude/contexts/<path>       (always-on @import)
+      "skill"    → ~/.claude/skills/<name>/SKILL.md
+      "command"  → ~/.claude/commands/<stem>.md
+    """
+    parts = path.split("/")
+    top   = parts[0]
+    name  = pathlib.Path(path).stem
+
+    # Root-level index.md only — navigation guide, always-on
+    if path == "index.md":
+        return ("context", CONTEXTS_DIR / "index.md")
+
+    # context/ directory → always-on context
+    if top == "context" and path.endswith(".md"):
+        return ("context", CONTEXTS_DIR / pathlib.Path(path))
+
+    # skills/ directory → ~/.claude/skills/<name>/SKILL.md (if has frontmatter)
+    if top == "skills" and path.endswith(".md"):
+        if name in ("overview", "README", "readme"):
+            return None
+        if not has_skill_frontmatter(content):
+            log.debug("  skipping %s (no skill frontmatter)", path)
+            return None
+        return ("skill", SKILLS_DIR / name / "SKILL.md")
+
+    # prompts/ directory → ~/.claude/commands/<name>.md
+    if top == "prompts" and path.endswith(".md"):
+        return ("command", COMMANDS_DIR / f"{name}.md")
+
+    return None
+
+# ── Backup ─────────────────────────────────────────────────────────────────────
+
+def backup_existing_files(dry_run: bool) -> None:
+    """
+    Snapshot all files that this script manages into a timestamped backup dir,
+    keeping the last MAX_BACKUPS snapshots.
+
+    Covers: CLAUDE.md, contexts/, skills/, commands/
+    """
+    import datetime
+
+    managed: list[pathlib.Path] = []
+    if CLAUDE_MD.exists():
+        managed.append(CLAUDE_MD)
+    for managed_dir in (CONTEXTS_DIR, SKILLS_DIR, COMMANDS_DIR):
+        if managed_dir.exists():
+            managed.extend(p for p in managed_dir.rglob("*") if p.is_file())
+
+    if not managed:
+        log.debug("Nothing to back up.")
+        return
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_root = BACKUPS_DIR / timestamp
+
+    if dry_run:
+        log.info("DRY RUN — would back up %d file(s) to %s", len(managed), backup_root)
+        return
+
+    backup_root.mkdir(parents=True, exist_ok=True)
+    for src in managed:
+        # Preserve relative path under ~/.claude/
+        rel = src.relative_to(CLAUDE_DIR)
+        dest = backup_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+
+    log.debug("Backed up %d file(s) → %s", len(managed), backup_root)
+
+    # Prune oldest backups, keep only MAX_BACKUPS
+    snapshots = sorted(BACKUPS_DIR.iterdir())
+    for old in snapshots[:-MAX_BACKUPS]:
+        shutil.rmtree(old)
+        log.debug("Removed old backup %s", old)
+
+
+# ── Install helpers ────────────────────────────────────────────────────────────
+
+def install_file(path: str, content: str, dry_run: bool) -> tuple[str, pathlib.Path] | None:
+    """Classify and write a single file. Returns (kind, dest) or None if skipped."""
+    result = classify_file(path, content)
+    if result is None:
+        return None
+
+    kind, dest = result
+    log.info("  [%s] %s → %s", kind, path, dest)
+    if not dry_run:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
+    return kind, dest
+
+
 # ── Mode 1: Cloudflare Worker ──────────────────────────────────────────────────
 
 def sync_from_worker(source_url: str, api_key: str, dry_run: bool) -> None:
@@ -135,28 +256,17 @@ def sync_from_worker(source_url: str, api_key: str, dry_run: bool) -> None:
 
     log.info("Manifest contains %d file(s), synced at %s", len(files), manifest.get("synced_at", "?"))
 
-    root_paths: list[str] = []
-    dept_map: dict[str, list[str]] = {}
+    backup_existing_files(dry_run)
+
+    context_paths: list[str] = []
 
     for path, meta in files.items():
         content: str = meta["content"]
-        parts = path.split("/")
+        result = install_file(path, content, dry_run)
+        if result and result[0] == "context":
+            context_paths.append(path)
 
-        if len(parts) == 1:
-            root_paths.append(path)
-            dest = CONTEXTS_DIR / path
-        else:
-            dept = parts[0]
-            dept_map.setdefault(dept, []).append(path)
-            filename = pathlib.Path(path).name
-            dest = CONTEXTS_DIR / dept / filename
-
-        log.info("  installing %s → %s", path, dest)
-        if not dry_run:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
-
-    update_claude_md(root_paths, dept_map, dry_run)
+    update_claude_md(context_paths, dry_run)
     log.info("✓ Sync complete.")
 
 # ── Mode 2: Direct GitHub ──────────────────────────────────────────────────────
@@ -195,85 +305,67 @@ def sync_from_github(
 
     log.info("Found %d .md file(s)", len(md_blobs))
 
-    root_paths: list[str] = []
-    dept_map: dict[str, list[str]] = {}
+    backup_existing_files(dry_run)
+
+    context_paths: list[str] = []
 
     for blob in md_blobs:
         path: str = blob["path"]
-        raw_url = (
-            f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
-        )
+        raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
         log.info("  downloading %s", path)
-        content_bytes = http_get(raw_url, {"Authorization": f"Bearer {token}",
-                                            "User-Agent": "claude-context-sync/1.0"})
-        content = content_bytes.decode("utf-8")
+        content = http_get(raw_url, {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "claude-context-sync/1.0",
+        }).decode("utf-8")
 
-        parts = path.split("/")
-        if len(parts) == 1:
-            root_paths.append(path)
-            dest = CONTEXTS_DIR / path
-        else:
-            dept = parts[0]
-            dept_map.setdefault(dept, []).append(path)
-            filename = pathlib.Path(path).name
-            dest = CONTEXTS_DIR / dept / filename
+        result = install_file(path, content, dry_run)
+        if result and result[0] == "context":
+            context_paths.append(path)
 
-        log.info("    → %s", dest)
-        if not dry_run:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
-
-    update_claude_md(root_paths, dept_map, dry_run)
+    update_claude_md(context_paths, dry_run)
     log.info("✓ Sync complete.")
-
-# ── CLAUDE.md backup ──────────────────────────────────────────────────────────
-
-def backup_claude_md() -> None:
-    """Back up CLAUDE.md before modification, keeping the last MAX_BACKUPS copies."""
-    if not CLAUDE_MD.exists():
-        return
-    import datetime
-    BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = BACKUPS_DIR / f"CLAUDE.md.{timestamp}"
-    backup_path.write_text(CLAUDE_MD.read_text(encoding="utf-8"), encoding="utf-8")
-    log.debug("Backed up CLAUDE.md → %s", backup_path)
-
-    # Prune old backups, keeping only the most recent MAX_BACKUPS
-    backups = sorted(BACKUPS_DIR.glob("CLAUDE.md.*"))
-    for old in backups[:-MAX_BACKUPS]:
-        old.unlink()
-        log.debug("Removed old backup %s", old)
-
 
 # ── CLAUDE.md management ───────────────────────────────────────────────────────
 
-def build_sync_block(root_paths: list[str], dept_map: dict[str, list[str]]) -> str:
+def _context_import_path(repo_path: str) -> str:
+    """Convert a repo path to the @import path relative to ~/.claude/."""
+    if repo_path == "index.md":
+        return f"{CONTEXTS_SUBDIR}/index.md"
+    # repo path is like "context/company.md" → contexts/context/company.md
+    return f"{CONTEXTS_SUBDIR}/{repo_path}"
+
+
+def build_sync_block(context_paths: list[str]) -> str:
     lines = [
         SYNC_BLOCK_START,
         "# Company AI Contexts  (auto-synced — do not edit this section manually)",
         "",
     ]
-    for path in sorted(root_paths):
-        lines.append(f"@{CONTEXTS_SUBDIR}/{path}")
 
-    for dept in sorted(dept_map):
-        lines.append(f"\n## {dept.replace('-', ' ').replace('_', ' ').title()}")
-        for path in sorted(dept_map[dept]):
-            filename = pathlib.Path(path).name
-            lines.append(f"@{CONTEXTS_SUBDIR}/{dept}/{filename}")
+    # index.md first if present
+    if "index.md" in context_paths:
+        lines.append(f"@{_context_import_path('index.md')}")
+
+    # Group remaining by subdirectory
+    subdir_map: dict[str, list[str]] = {}
+    for path in sorted(context_paths):
+        if path == "index.md":
+            continue
+        top = path.split("/")[0]
+        subdir_map.setdefault(top, []).append(path)
+
+    for subdir in sorted(subdir_map):
+        lines.append(f"\n## {subdir.replace('-', ' ').replace('_', ' ').title()}")
+        for path in sorted(subdir_map[subdir]):
+            lines.append(f"@{_context_import_path(path)}")
 
     lines.append("")
     lines.append(SYNC_BLOCK_END)
     return "\n".join(lines) + "\n"
 
 
-def update_claude_md(
-    root_paths: list[str],
-    dept_map: dict[str, list[str]],
-    dry_run: bool = False,
-) -> None:
-    block = build_sync_block(root_paths, dept_map)
+def update_claude_md(context_paths: list[str], dry_run: bool = False) -> None:
+    block = build_sync_block(context_paths)
 
     if CLAUDE_MD.exists():
         existing = CLAUDE_MD.read_text(encoding="utf-8")
@@ -295,7 +387,6 @@ def update_claude_md(
     if dry_run:
         log.info("DRY RUN — would write %s:\n%s", CLAUDE_MD, new_content)
     else:
-        backup_claude_md()
         CLAUDE_MD.write_text(new_content, encoding="utf-8")
         log.info("%s %s", action, CLAUDE_MD)
 
@@ -349,10 +440,10 @@ def main() -> None:
     branch     = resolve("GITHUB_BRANCH",  args.branch,       config) or DEFAULT_GITHUB_BRANCH
 
     if not args.dry_run:
-        CONTEXTS_DIR.mkdir(parents=True, exist_ok=True)
+        for d in (CONTEXTS_DIR, SKILLS_DIR, COMMANDS_DIR):
+            d.mkdir(parents=True, exist_ok=True)
 
     if source_url:
-        # Worker mode — preferred for employees
         if not api_key:
             raise SystemExit(
                 f"\n[ERROR] CONTEXT_API_KEY not set.\n"
@@ -361,7 +452,6 @@ def main() -> None:
             )
         sync_from_worker(source_url, api_key, dry_run=args.dry_run)
     elif gh_token:
-        # Direct GitHub mode — for admins / fallback
         log.warning(
             "Using direct GitHub mode. For employees, configure SOURCE_URL + CONTEXT_API_KEY instead."
         )
