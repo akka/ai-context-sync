@@ -46,6 +46,7 @@ import shutil
 import sys
 import urllib.error
 import urllib.request
+from typing import Optional, Tuple
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ def read_config() -> dict[str, str]:
     return config
 
 
-def resolve(key: str, cli_val: str | None, config: dict[str, str]) -> str | None:
+def resolve(key: str, cli_val: Optional[str], config: dict) -> Optional[str]:
     """Priority: CLI arg > environment variable > config file."""
     if cli_val:
         return cli_val
@@ -138,7 +139,7 @@ def has_skill_frontmatter(content: str) -> bool:
     return bool(re.search(r"^name:\s*\S", frontmatter, re.MULTILINE))
 
 
-def classify_file(path: str, content: str) -> tuple[str, pathlib.Path] | None:
+def classify_file(path: str, content: str) -> Optional[Tuple[str, pathlib.Path]]:
     """
     Return (kind, dest_path) for a repo path, or None to skip.
 
@@ -225,7 +226,7 @@ def backup_existing_files(dry_run: bool) -> None:
 
 # ── Install helpers ────────────────────────────────────────────────────────────
 
-def install_file(path: str, content: str, dry_run: bool) -> tuple[str, pathlib.Path] | None:
+def install_file(path: str, content: str, dry_run: bool) -> Optional[Tuple[str, pathlib.Path]]:
     """Classify and write a single file. Returns (kind, dest) or None if skipped."""
     result = classify_file(path, content)
     if result is None:
