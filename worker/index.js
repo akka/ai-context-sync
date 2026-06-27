@@ -20,10 +20,9 @@ const GITHUB_REPO   = "akka/org-ai-contexts";
 const GITHUB_BRANCH = "main";
 const CACHE_TTL_SEC = 90000; // KV edge TTL (~25 hours — longer than cron interval)
 
-// Paths to include from the repo (by top-level directory or exact name).
-// Everything else is ignored — repo metadata, generated bundles, etc.
-const INCLUDE_TOPS  = new Set(["context", "skills", "prompts"]);
-const INCLUDE_EXACT = new Set(["index.md"]);
+// Top-level directories to include from org-ai-contexts.
+// Matches the ~/.claude/ layout directly — no path transformation needed.
+const INCLUDE_TOPS = new Set(["contexts", "skills", "commands"]);
 
 // ── KV key constants ──────────────────────────────────────────────────────────
 const MANIFEST_KEY  = "__manifest__";
@@ -95,7 +94,7 @@ async function syncFromGitHub(env) {
   const mdBlobs = tree.tree.filter((item) => {
     if (item.type !== "blob" || !item.path.endsWith(".md")) return false;
     const top = item.path.split("/")[0];
-    return INCLUDE_EXACT.has(item.path) || INCLUDE_TOPS.has(top);
+    return INCLUDE_TOPS.has(top);
   });
 
   console.log(`Found ${mdBlobs.length} matching .md file(s)`);
