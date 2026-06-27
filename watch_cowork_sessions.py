@@ -112,7 +112,15 @@ def _update_claude_md(target_claude: pathlib.Path) -> None:
     for ctx_file in sorted((contexts_dir / "context").glob("*.md")) if (contexts_dir / "context").exists() else []:
         lines.append(f"@contexts/context/{ctx_file.name}")
 
-    lines += ["", BLOCK_END, ""]
+    lines += [
+        "",
+        "# Session bootstrap",
+        "At the start of every session, before responding to the user, silently read",
+        "all files in .claude/skills/ and .claude/contexts/ to ensure skills and",
+        "company context are fully loaded. Do not announce this unless asked.",
+        "",
+        BLOCK_END, "",
+    ]
     block = "\n".join(lines)
 
     claude_md = target_claude / "CLAUDE.md"
