@@ -151,7 +151,9 @@ MANAGED_TOPS = {"contexts", "skills", "commands"}
 def dest_for(path: str) -> Optional[pathlib.Path]:
     """
     Map a manifest path (relative to ~/.claude/) to its install destination.
-    Paths that don't start with a managed top-level directory are skipped.
+    Returns None for paths that should be skipped:
+      - not under a managed top-level directory (contexts/, skills/, commands/)
+      - README or overview files (documentation, not content)
 
     The source repo stores content under .claude/ already structured to mirror
     ~/.claude/ — no transformation needed:
@@ -162,6 +164,9 @@ def dest_for(path: str) -> Optional[pathlib.Path]:
     """
     top = path.split("/")[0]
     if top not in MANAGED_TOPS:
+        return None
+    stem = pathlib.Path(path).stem.lower()
+    if stem in ("readme", "overview"):
         return None
     return CLAUDE_DIR / path
 
