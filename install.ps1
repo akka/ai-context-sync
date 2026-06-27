@@ -15,12 +15,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptName  = "sync_claude_contexts.py"
-$ClaudeDir   = Join-Path $env:USERPROFILE ".claude"
-$InstallPath = Join-Path $ClaudeDir $ScriptName
-$ConfigFile  = Join-Path $ClaudeDir "context-sync.conf"
-$LogFile     = Join-Path $ClaudeDir "context-sync.log"
-$TaskName    = "ClaudeContextSync"
+$ScriptName   = "sync_claude_contexts.py"
+$WatcherName  = "watch_cowork_sessions.py"
+$ClaudeDir    = Join-Path $env:USERPROFILE ".claude"
+$InstallPath  = Join-Path $ClaudeDir $ScriptName
+$WatcherPath  = Join-Path $ClaudeDir $WatcherName
+$ConfigFile   = Join-Path $ClaudeDir "context-sync.conf"
+$LogFile      = Join-Path $ClaudeDir "context-sync.log"
+$WatcherLog   = Join-Path $ClaudeDir "cowork-watcher.log"
+$TaskName     = "ClaudeContextSync"
+$WatcherTask  = "ClaudeCoworkWatcher"
 
 function Info  { param($m) Write-Host "  [INFO]  $m" -ForegroundColor Cyan }
 function Warn  { param($m) Write-Host "  [WARN]  $m" -ForegroundColor Yellow }
@@ -73,6 +77,22 @@ if (Test-Path $LocalScript) {
 }
 Info "Installed script to $InstallPath"
 
+# ── Copy or download cowork watcher ──────────────────────────────────────────
+$LocalWatcher = Join-Path $PSScriptRoot $WatcherName
+if (Test-Path $LocalWatcher) {
+    Info "Copying $WatcherName from current directory…"
+    Copy-Item $LocalWatcher $WatcherPath -Force
+} else {
+    Info "Downloading $WatcherName from GitHub…"
+    $WatcherUrl = "https://raw.githubusercontent.com/akka/ai-context-sync/main/$WatcherName"
+    try {
+        Invoke-WebRequest -Uri $WatcherUrl -OutFile $WatcherPath -UseBasicParsing
+        Info "Installed watcher to $WatcherPath"
+    } catch {
+        Warn "Could not download ${WatcherName} — cowork session sync unavailable."
+    }
+}
+
 # ── Write config file ─────────────────────────────────────────────────────────
 if ($Key -ne "") {
     Set-Content -Path $ConfigFile -Value @"
@@ -95,8 +115,9 @@ try {
     $acl = Get-Acl $ConfigFile
     $acl.SetAccessRuleProtection($true, $false)
     $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        $env:USERNAME, "FullControl", "Allow"
+        $currentUser, "FullControl", "Allow"
     )
     $acl.AddAccessRule($rule)
     Set-Acl -Path $ConfigFile -AclObject $acl
@@ -130,6 +151,38 @@ Register-ScheduledTask `
     -RunLevel  Limited | Out-Null
 
 Info "Scheduled task created — runs daily at 08:00."
+
+# ── Task Scheduler — cowork watcher (persistent, restarts on failure) ─────────
+if (Test-Path $WatcherPath) {
+    Info "Creating cowork watcher task ($WatcherTask)…"
+
+    $WatcherAction = New-ScheduledTaskAction `
+        -Execute $PythonPath `
+        -Argument "`"$WatcherPath`" >> `"$WatcherLog`" 2>&1"
+
+    # Trigger: at logon, runs indefinitely
+    $WatcherTrigger = New-ScheduledTaskTrigger -AtLogOn
+
+    $WatcherSettings = New-ScheduledTaskSettingsSet `
+        -ExecutionTimeLimit ([System.TimeSpan]::Zero) `
+        -RestartCount 10 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -StartWhenAvailable
+
+    Unregister-ScheduledTask -TaskName $WatcherTask -Confirm:$false -ErrorAction SilentlyContinue
+
+    Register-ScheduledTask `
+        -TaskName    $WatcherTask `
+        -Action      $WatcherAction `
+        -Trigger     $WatcherTrigger `
+        -Settings    $WatcherSettings `
+        -Description "Watches for new Claude cowork sessions and injects org context" `
+        -RunLevel    Limited | Out-Null
+
+    # Start it immediately
+    Start-ScheduledTask -TaskName $WatcherTask -ErrorAction SilentlyContinue
+    Info "Cowork watcher task created and started."
+}
 
 # ── First run ─────────────────────────────────────────────────────────────────
 if ($Key -ne "") {

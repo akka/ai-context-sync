@@ -1,7 +1,8 @@
 # Claude Context Sync
 
 Distributes company-wide AI context files from a central GitHub repository to every
-employee's Claude Code installation.  Runs on a daily schedule.
+employee's Claude Code installation. Runs on a daily schedule and keeps cowork sessions
+in sync automatically.
 
 **Requirements:** Python 3.8+ only — no pip dependencies.
 
@@ -10,7 +11,7 @@ employee's Claude Code installation.  Runs on a daily schedule.
 ## Architecture
 
 ```
-github.com/akka/org-ai-contexts  (private repo, bot token)
+github.com/akka/ai-context-sync  (private repo, bot token)
             │
             │  daily cron (07:00 UTC)
             ▼
@@ -19,18 +20,20 @@ github.com/akka/org-ai-contexts  (private repo, bot token)
             │
             │  HTTPS  +  Bearer token  (shared API key)
             ▼
-  Employee machines  →  ~/.claude/contexts/     (daily cron, 08:00 local)
-                        ~/.claude/CLAUDE.md      (auto-updated)
+  Employee machines  →  ~/.claude/contexts/     (daily cron/timer, 08:00 local)
+                        ~/.claude/skills/
+                        ~/.claude/CLAUDE.md      (auto-updated with @imports)
                               │
                               │  local copy — no network
                               ▼
-                        <project>/.claude/       (UserPromptSubmit hook, cowork)
+                        <session>/.claude/       (cowork watcher daemon)
 ```
 
 - The **GitHub bot token** never leaves Cloudflare — stored as a Worker secret.
 - Employees receive a **shared API key** (scoped only to this endpoint, easily rotated).
 - No GitHub account required for employees.
-- **Cowork sessions** copy from the already-synced `~/.claude/` into the project's `.claude/` directory via a hook — no extra network calls.
+- **Cowork sessions** are handled by a background watcher daemon that copies from `~/.claude/`
+  into each new session's `.claude/` directory — no extra network calls.
 
 ---
 
@@ -38,17 +41,20 @@ github.com/akka/org-ai-contexts  (private repo, bot token)
 
 ```
 ai-contexts/
-├── company.md          ← company-wide context (always loaded)
-├── marketing/
-│   └── context.md
-├── support/
-│   └── context.md
-└── sales/
-    └── context.md
+├── contexts/
+│   ├── index.md            ← loaded in every session
+│   └── context/
+│       ├── company.md
+│       ├── platform.md
+│       └── ...
+└── skills/                 ← loaded based on directory/project context
+    ├── engineering.md
+    ├── marketing.md
+    └── ...
 ```
 
-Files are installed to `~/.claude/contexts/` and imported via `@` directives in
-`~/.claude/CLAUDE.md`, giving Claude Code a proper hierarchy.
+Files are installed to `~/.claude/contexts/` and `~/.claude/skills/` and imported via
+`@` directives in `~/.claude/CLAUDE.md`.
 
 ---
 
@@ -58,8 +64,8 @@ Files are installed to `~/.claude/contexts/` and imported via `@` directives in
 
 - Cloudflare account with the `akka.io` zone
 - [Node.js](https://nodejs.org) and `npm` (for Wrangler CLI)
-- A GitHub bot PAT with `contents: read` on `akka/ai-assistant-configs`
-- A generated API key to distribute to employees — generate one with:
+- A GitHub bot PAT with `contents: read` on `akka/ai-context-sync`
+- A generated API key to distribute to employees:
   ```bash
   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
   ```
@@ -112,13 +118,9 @@ machines sync at 08:00 local time).
 
 ### Updating the Worker
 
-After changing `worker/index.js` or `worker/wrangler.toml`, redeploy and trigger a manual sync:
-
 ```bash
 cd worker/
 wrangler deploy
-
-# Repopulate KV from the (possibly updated) GitHub repo
 curl -X POST https://claude-contexts.akka.io/sync \
   -H "Authorization: Bearer YOUR_CONTEXT_API_KEY"
 ```
@@ -129,14 +131,7 @@ curl -X POST https://claude-contexts.akka.io/sync \
 
 Employees need only the **API key** — no GitHub account.
 
-### macOS
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/install.sh \
-  | bash -s -- --key YOUR_CONTEXT_API_KEY
-```
-
-### Linux
+### macOS / Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/install.sh \
@@ -156,31 +151,21 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/akka/ai-context-sync/m
 
 ### What the installer does
 
-1. Downloads `sync_claude_contexts.py` to `~/.claude/`
+1. Downloads `sync_claude_contexts.py` and `watch_cowork_sessions.py` to `~/.claude/`
 2. Writes `~/.claude/context-sync.conf` with the API key (mode `600` / user-only ACL)
-3. Schedules a daily job:
-   - **macOS:** launchd plist at `~/Library/LaunchAgents/io.akka.claude-context-sync.plist`
-   - **Linux:** user crontab entry
-   - **Windows:** Task Scheduler task `ClaudeContextSync` with `StartWhenAvailable`
-4. Injects a `UserPromptSubmit` hook into `~/.claude/settings.json` for cowork support
-5. Runs an initial sync immediately
+3. Schedules a **daily context sync** at 08:00:
+   - **macOS:** launchd plist `io.akka.claude-context-sync.plist`
+   - **Linux:** systemd user timer `akka-claude-context-sync.timer` (falls back to crontab)
+   - **Windows:** Task Scheduler task `ClaudeContextSync`
+4. Installs and starts the **cowork session watcher daemon** (see below)
+5. Injects a `SessionStart` hook into `~/.claude/settings.json` (for non-cowork sessions)
+6. Runs an initial sync immediately
 
-### Cowork support
+### Self-update
 
-The installer adds a `UserPromptSubmit` hook that runs automatically in every Claude Code
-session (including cowork). On the **first prompt of a session** it copies org context from
-`~/.claude/` into the project's `.claude/` directory. Subsequent prompts re-copy only if
-the last copy was more than **6 hours** ago (matching the cron cadence).
-
-Add `.claude/.sync-timestamp` and any org context subdirectories to your project's
-`.gitignore` to avoid committing ephemeral session files:
-
-```gitignore
-.claude/.sync-timestamp
-.claude/contexts/
-.claude/skills/
-.claude/commands/
-```
+On every scheduled sync run, `sync_claude_contexts.py` fetches the latest version of
+itself and `watch_cowork_sessions.py` from GitHub. If either file changed, it replaces
+the local copy atomically — no manual reinstall needed when the scripts are updated.
 
 ### Employee config file
 
@@ -194,9 +179,67 @@ The API key can also be set via the `CONTEXT_API_KEY` environment variable.
 
 ---
 
-## Rotating the API key
+## Cowork session support
 
-When you need to issue a new key (employee offboarding, key exposure, periodic rotation):
+Claude cowork sessions run in an isolated VM where `~/.claude/` is not accessible.
+To get org context into cowork, a background watcher daemon monitors the session
+directory and copies context files into each new session as it starts.
+
+### How it works
+
+1. The watcher daemon polls every 5 seconds for new session directories under:
+   - **macOS:** `~/Library/Application Support/Claude/local-agent-mode-sessions/`
+   - **Linux:** `~/.config/Claude/local-agent-mode-sessions/` (XDG_CONFIG_HOME honoured)
+   - **Windows:** `%APPDATA%/Claude/local-agent-mode-sessions/`
+2. When a new `local_<uuid>` session directory appears, it copies `contexts/`, `skills/`,
+   and `commands/` from `~/.claude/` into `<session>/.claude/`
+3. It also writes a `CLAUDE.md` with `@import` directives and a bootstrap notice that
+   prompts the model to announce when context is available
+4. On macOS, a second `WatchPaths` launchd trigger fires instantly when the directory
+   changes — the polling daemon is the fallback
+
+### Daemon setup per platform
+
+| Platform | Mechanism | Service name |
+|----------|-----------|--------------|
+| macOS | launchd KeepAlive plist | `io.akka.claude-cowork-watcher` |
+| macOS (fast trigger) | launchd WatchPaths plist | `io.akka.claude-cowork-watchpath` |
+| Linux (systemd) | systemd user service | `akka-claude-cowork-watcher.service` |
+| Linux (fallback) | cron `@reboot` + immediate background start | — |
+| Windows | Task Scheduler at-logon task | `ClaudeCoworkWatcher` |
+
+### Session bootstrap notice
+
+When the watcher syncs a new session, it injects a notice into the session's `CLAUDE.md`
+instructing the model to announce once that company context is loaded:
+
+> Company context loaded — give the system a moment to catch up, then re-try anything
+> that needs Akka knowledge or team skills.
+
+This fires on the first response after context becomes available in the session.
+
+### .gitignore recommendation
+
+If your project uses version control, add these to `.gitignore` to avoid committing
+ephemeral session files:
+
+```gitignore
+.claude/.sync-timestamp
+.claude/contexts/
+.claude/skills/
+.claude/commands/
+```
+
+### Logs
+
+| File | Contents |
+|------|----------|
+| `~/.claude/context-sync.log` | Daily sync output |
+| `~/.claude/cowork-watcher.log` | Cowork watcher daemon output |
+
+---
+
+## Rotating the API key
 
 ```bash
 cd worker/
@@ -228,9 +271,22 @@ python "%USERPROFILE%\.claude\sync_claude_contexts.py"
 
 ---
 
+## CLAUDE.md backups
+
+Before every sync, the script backs up managed files to timestamped directories under
+`~/.claude/backups/`, keeping the last 5 snapshots. To restore:
+
+```bash
+ls ~/.claude/backups/
+cp ~/.claude/backups/<timestamp>/CLAUDE.md ~/.claude/CLAUDE.md
+cp -r ~/.claude/backups/<timestamp>/contexts/ ~/.claude/contexts/
+```
+
+---
+
 ## Uninstalling
 
-### macOS / Linux
+### macOS
 
 ```bash
 # Remove schedule, script, and config (leaves context files and backups in place)
@@ -240,27 +296,37 @@ curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/uninstall
 curl -fsSL https://raw.githubusercontent.com/akka/ai-context-sync/main/uninstall.sh | bash -s -- --purge
 ```
 
+### Linux
+
+```bash
+# Stop and remove systemd units (if installed)
+systemctl --user disable --now akka-claude-context-sync.timer akka-claude-cowork-watcher.service
+rm -f ~/.config/systemd/user/akka-claude-context-sync.{service,timer}
+rm -f ~/.config/systemd/user/akka-claude-cowork-watcher.service
+systemctl --user daemon-reload
+
+# Remove cron entries (if using cron fallback)
+crontab -l | grep -v "sync_claude_contexts\|watch_cowork_sessions" | crontab -
+
+# Remove scripts and config
+rm -f ~/.claude/sync_claude_contexts.py ~/.claude/watch_cowork_sessions.py ~/.claude/context-sync.conf
+```
+
 ### Windows
 
 ```powershell
-Unregister-ScheduledTask -TaskName ClaudeContextSync -Confirm:$false
-Remove-Item "$env:USERPROFILE\.claude\sync_claude_contexts.py" -ErrorAction SilentlyContinue
-Remove-Item "$env:USERPROFILE\.claude\context-sync.conf" -ErrorAction SilentlyContinue
-```
-
-## CLAUDE.md backups
-
-Before every sync, the script backs up `~/.claude/CLAUDE.md` to `~/.claude/backups/`, keeping the
-last 5 copies. To restore a previous version:
-
-```bash
-ls ~/.claude/backups/
-cp ~/.claude/backups/CLAUDE.md.<timestamp> ~/.claude/CLAUDE.md
+Unregister-ScheduledTask -TaskName ClaudeContextSync  -Confirm:$false
+Unregister-ScheduledTask -TaskName ClaudeCoworkWatcher -Confirm:$false
+Remove-Item "$env:USERPROFILE\.claude\sync_claude_contexts.py"  -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.claude\watch_cowork_sessions.py" -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.claude\context-sync.conf"        -ErrorAction SilentlyContinue
 ```
 
 ---
 
 ## Script reference
+
+### sync_claude_contexts.py
 
 ```
 sync_claude_contexts.py [options]
@@ -270,14 +336,20 @@ sync_claude_contexts.py [options]
   --github-token TOK  Direct GitHub mode — admin/fallback only
   --repo OWNER/REPO   GitHub repo for direct mode
   --branch BRANCH     Branch for direct mode
-  --local-copy        Copy from ~/.claude/ into --target-dir (no network, for cowork hook)
+  --local-copy        Copy from ~/.claude/ into --target-dir (no network, for SessionStart hook)
   --target-dir DIR    Destination for --local-copy (default: .claude in CWD)
   --cooldown MINS     Skip copy if last run was within N minutes (default: 360)
   --dry-run           Show what would be done without writing files
   -v, --verbose       Debug logging
 ```
 
-Logs: `~/.claude/context-sync.log`
+### watch_cowork_sessions.py
+
+```
+watch_cowork_sessions.py [options]
+
+  --once    Scan for unsynced sessions once and exit (used by macOS WatchPaths trigger)
+```
 
 ---
 
@@ -286,9 +358,14 @@ Logs: `~/.claude/context-sync.log`
 | Symptom | Fix |
 |---------|-----|
 | `HTTP 401` | API key wrong or missing — check `context-sync.conf` |
-| `HTTP 404 /manifest.json` | Worker not deployed, or KV not yet populated — run `POST /sync` |
+| `HTTP 404 /manifest.json` | Worker not deployed or KV not yet populated — run `POST /sync` |
 | `Python 3.8+ not found` | Install from https://python.org/downloads |
-| Contexts not loading in Claude | Check `~/.claude/CLAUDE.md` contains the `<!-- claude-context-sync -->` block |
-| macOS: launchd not running | `launchctl list \| grep akka` — check exit code in log |
-| Windows: task not running | Task Scheduler → `ClaudeContextSync` → History tab |
+| Contexts not loading in Claude Code | Check `~/.claude/CLAUDE.md` contains the `<!-- claude-context-sync -->` block |
+| Cowork session has no context | Check `~/.claude/cowork-watcher.log` — is the daemon running? |
+| macOS: sync daemon not running | `launchctl list \| grep akka` — check exit code; reload with `launchctl load -w ~/Library/LaunchAgents/io.akka.claude-context-sync.plist` |
+| macOS: cowork watcher not running | `launchctl list \| grep akka-claude-cowork` — reload watcher and watchpath plists |
+| Linux: systemd timer not running | `systemctl --user status akka-claude-context-sync.timer` |
+| Linux: cowork watcher not running | `systemctl --user status akka-claude-cowork-watcher.service` |
+| Windows: sync task not running | Task Scheduler → `ClaudeContextSync` → History tab |
+| Windows: cowork watcher not running | Task Scheduler → `ClaudeCoworkWatcher` → History tab |
 | Worker cron not firing | Cloudflare dashboard → Workers → `claude-context-sync` → Cron Triggers |
