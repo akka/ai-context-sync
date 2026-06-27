@@ -60,6 +60,11 @@ DEFAULT_GITHUB_REPO    = "akka/org-ai-contexts"
 DEFAULT_GITHUB_BRANCH  = "main"
 DEFAULT_COOLDOWN_MINS  = 360  # 6 hours — matches cron cadence
 
+SCRIPT_REPO    = "akka/ai-context-sync"
+SCRIPT_BRANCH  = "main"
+SCRIPT_NAME    = "sync_claude_contexts.py"
+SCRIPT_URL     = f"https://raw.githubusercontent.com/{SCRIPT_REPO}/{SCRIPT_BRANCH}/{SCRIPT_NAME}"
+
 CLAUDE_DIR       = pathlib.Path.home() / ".claude"
 CONTEXTS_DIR     = CLAUDE_DIR / "contexts"
 SKILLS_DIR       = CLAUDE_DIR / "skills"
@@ -404,6 +409,47 @@ def update_claude_md(context_paths: list[str], dry_run: bool = False) -> None:
         CLAUDE_MD.write_text(new_content, encoding="utf-8")
         log.info("%s %s", action, CLAUDE_MD)
 
+# ── Self-update ────────────────────────────────────────────────────────────────
+
+def self_update(dry_run: bool = False) -> None:
+    """
+    Fetch the canonical script from GitHub and replace the running file if the
+    content has changed. Re-execs with the same arguments so the new version
+    handles the rest of the sync run.
+    """
+    this_file = pathlib.Path(__file__).resolve()
+
+    log.debug("Checking for script update from %s …", SCRIPT_URL)
+    try:
+        latest = http_get(SCRIPT_URL, {"User-Agent": "claude-context-sync/1.0"})
+    except SystemExit as exc:
+        log.warning("Self-update check failed: %s — continuing with current version.", exc)
+        return
+
+    current = this_file.read_bytes()
+    if latest == current:
+        log.debug("Script is up to date.")
+        return
+
+    log.info("New version of %s available — updating…", SCRIPT_NAME)
+    if dry_run:
+        log.info("DRY RUN — would replace %s with latest version.", this_file)
+        return
+
+    # Write atomically via a temp file alongside the target
+    tmp = this_file.with_suffix(".tmp")
+    try:
+        tmp.write_bytes(latest)
+        tmp.replace(this_file)
+    except OSError as exc:
+        log.warning("Self-update failed writing %s: %s — continuing with current version.", this_file, exc)
+        tmp.unlink(missing_ok=True)
+        return
+
+    log.info("Script updated — restarting with new version…")
+    os.execv(sys.executable, [sys.executable, str(this_file)] + sys.argv[1:])
+
+
 # ── Cowork hook self-healing ───────────────────────────────────────────────────
 
 SETTINGS_FILE  = CLAUDE_DIR / "settings.json"
@@ -646,6 +692,12 @@ def main() -> None:
     args = parser.parse_args()
 
     configure_logging(args.verbose)
+
+    # Self-update before doing anything else so the rest of the run uses the
+    # new version. Skipped in --local-copy mode (no network, hook path).
+    if not args.local_copy and not args.dry_run:
+        self_update()
+
     config = read_config()
 
     if args.local_copy:
