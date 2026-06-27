@@ -115,12 +115,11 @@ def _update_claude_md(target_claude: pathlib.Path) -> None:
     lines += [
         "",
         "# Session bootstrap",
-        "At the start of every session, before responding to the user:",
-        "1. Silently read all files in .claude/skills/ and .claude/contexts/ to ensure",
-        "   skills and company context are fully loaded.",
-        "2. Inform the user: \"Company context and skills are being synced in the",
-        "   background. If you require company-specific context or skills, please wait",
-        "   up to a minute before asking.\"",
+        "At the start of every response in this session, silently check whether",
+        ".claude/contexts/ is accessible. The first time it is, announce to the user:",
+        "\"Company context and skills are now loaded and available.\" then silently read",
+        "all files in .claude/skills/ and .claude/contexts/. Do not announce if",
+        "contexts are not yet available — just wait until the next response to check again.",
         "",
         BLOCK_END, "",
     ]
