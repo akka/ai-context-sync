@@ -115,8 +115,9 @@ try {
     $acl = Get-Acl $ConfigFile
     $acl.SetAccessRuleProtection($true, $false)
     $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        $env:USERNAME, "FullControl", "Allow"
+        $currentUser, "FullControl", "Allow"
     )
     $acl.AddAccessRule($rule)
     Set-Acl -Path $ConfigFile -AclObject $acl
@@ -157,7 +158,7 @@ if (Test-Path $WatcherPath) {
 
     $WatcherAction = New-ScheduledTaskAction `
         -Execute $PythonPath `
-        -Argument "`"$WatcherPath`""
+        -Argument "`"$WatcherPath`" >> `"$WatcherLog`" 2>&1"
 
     # Trigger: at logon, runs indefinitely
     $WatcherTrigger = New-ScheduledTaskTrigger -AtLogOn

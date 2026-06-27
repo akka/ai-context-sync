@@ -106,8 +106,10 @@ else
     warn "Could not download ${WATCHER_NAME} — cowork session sync unavailable."
   fi
 fi
-chmod +x "${WATCHER_PATH}"
-info "Installed watcher to ${WATCHER_PATH}"
+if [[ -f "${WATCHER_PATH}" ]]; then
+  chmod +x "${WATCHER_PATH}"
+  info "Installed watcher to ${WATCHER_PATH}"
+fi
 
 # Write config file
 if [[ -n "${CONTEXT_API_KEY}" ]]; then
@@ -316,11 +318,13 @@ EOF
     (crontab -l 2>/dev/null | grep -v "claude-context-sync\|sync_claude_contexts" ; echo "${CRON_LINE}") | crontab -
     info "Scheduled via cron — runs daily at 08:00."
 
-    # Cowork watcher — background process via cron @reboot
+    # Cowork watcher — background process via cron @reboot + start immediately
     if [[ -f "${WATCHER_PATH}" ]]; then
       WATCHER_CRON="@reboot ${PYTHON_ABS} ${WATCHER_PATH} >> ${INSTALL_DIR}/cowork-watcher.log 2>&1"
       (crontab -l 2>/dev/null | grep -v "cowork-watcher\|watch_cowork_sessions" ; echo "${WATCHER_CRON}") | crontab -
       info "Cowork watcher scheduled via @reboot cron entry."
+      nohup "${PYTHON_ABS}" "${WATCHER_PATH}" >> "${INSTALL_DIR}/cowork-watcher.log" 2>&1 &
+      info "Cowork watcher started in background (pid $!)."
     fi
   fi
 else

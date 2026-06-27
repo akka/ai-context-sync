@@ -711,7 +711,7 @@ def main() -> None:
     parser.add_argument(
         "--local-copy", action="store_true",
         help="Copy from ~/.claude/ into --target-dir without any network calls. "
-             "Intended for use in a UserPromptSubmit hook for cowork sessions.",
+             "Intended for use in a SessionStart hook for non-cowork sessions.",
     )
     parser.add_argument(
         "--target-dir", metavar="DIR", default=".claude",
