@@ -114,12 +114,14 @@ def _update_claude_md(target_claude: pathlib.Path) -> None:
 
     lines += [
         "",
-        "# Session bootstrap",
-        "At the start of every response in this session, silently check whether",
-        ".claude/contexts/ is accessible. The first time it is, announce to the user:",
-        "\"Company context and skills are now loaded and available.\" then silently read",
-        "all files in .claude/skills/ and .claude/contexts/. Do not announce if",
-        "contexts are not yet available — just wait until the next response to check again.",
+        "# Session bootstrap — REQUIRED",
+        "IMPORTANT: Before composing every response in this session, you MUST check",
+        "whether the directory .claude/contexts/ exists and is non-empty.",
+        "The very first time this check succeeds, you MUST begin your response with",
+        "this exact phrase on its own line:",
+        "  > Company context and skills are now loaded and available.",
+        "Do this regardless of what the user asked. Only announce once per session.",
+        "If the directory is not yet accessible, do not announce — check again next response.",
         "",
         BLOCK_END, "",
     ]
