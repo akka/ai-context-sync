@@ -16,14 +16,15 @@
  */
 
 // ── Config (edit these or move to env vars) ───────────────────────────────────
-const GITHUB_REPO   = "akka/org-ai-contexts";
+const GITHUB_REPO   = "akka/ai-context-sync";
 const GITHUB_BRANCH = "main";
 const CACHE_TTL_SEC = 90000; // KV edge TTL (~25 hours — longer than cron interval)
 
-// Paths to include from the repo (by top-level directory or exact name).
-// Everything else is ignored — repo metadata, generated bundles, etc.
-const INCLUDE_TOPS  = new Set(["context", "skills", "prompts"]);
-const INCLUDE_EXACT = new Set(["index.md"]);
+// Content lives in the .claude/ subtree of this repo, already structured to
+// match what employees need under ~/.claude/. Strip the leading ".claude/" when
+// storing so served paths are e.g. "contexts/index.md", "skills/ciso/SKILL.md".
+const CONTENT_PREFIX  = ".claude/";
+const INCLUDE_SUBDIRS = new Set(["contexts", "skills", "commands"]);
 
 // ── KV key constants ──────────────────────────────────────────────────────────
 const MANIFEST_KEY  = "__manifest__";
@@ -94,8 +95,9 @@ async function syncFromGitHub(env) {
 
   const mdBlobs = tree.tree.filter((item) => {
     if (item.type !== "blob" || !item.path.endsWith(".md")) return false;
-    const top = item.path.split("/")[0];
-    return INCLUDE_EXACT.has(item.path) || INCLUDE_TOPS.has(top);
+    if (!item.path.startsWith(CONTENT_PREFIX)) return false;
+    const sub = item.path.slice(CONTENT_PREFIX.length).split("/")[0];
+    return INCLUDE_SUBDIRS.has(sub);
   });
 
   console.log(`Found ${mdBlobs.length} matching .md file(s)`);
@@ -124,7 +126,10 @@ async function syncFromGitHub(env) {
 
   // KV puts are binding calls, not fetch subrequests — they don't count toward the limit
   for (let i = 0; i < mdBlobs.length; i++) {
-    const path = mdBlobs[i].path;
+    const rawPath  = mdBlobs[i].path;
+    const path     = rawPath.startsWith(CONTENT_PREFIX)
+      ? rawPath.slice(CONTENT_PREFIX.length)
+      : rawPath;
     const text = gqlData?.repository?.[`f${i}`]?.text ?? "";
     await env.CONTEXTS_KV.put(`file:${path}`, text, { expirationTtl: CACHE_TTL_SEC });
     manifest.files[path] = { path, size: text.length, content: text };

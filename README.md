@@ -11,7 +11,7 @@ in sync automatically.
 ## Architecture
 
 ```
-github.com/akka/ai-context-sync  (private repo, bot token)
+github.com/akka/ai-context-sync  (this repo — .claude/ subtree is the source)
             │
             │  daily cron (07:00 UTC)
             ▼
@@ -37,24 +37,35 @@ github.com/akka/ai-context-sync  (private repo, bot token)
 
 ---
 
-## GitHub repo layout
+## Content layout
+
+Content lives in the `.claude/` subdirectory of this repo. Its structure mirrors
+exactly what gets installed under `~/.claude/` on employee machines — no path
+transformation is needed.
 
 ```
-ai-contexts/
+.claude/
 ├── contexts/
 │   ├── index.md            ← loaded in every session
 │   └── context/
 │       ├── company.md
 │       ├── platform.md
 │       └── ...
-└── skills/                 ← loaded based on directory/project context
-    ├── engineering.md
-    ├── marketing.md
+├── skills/                 ← loaded based on directory/project context
+│   ├── engineering/
+│   │   └── SKILL.md
+│   ├── marketing/
+│   │   └── SKILL.md
+│   └── ...
+└── commands/               ← slash commands available in every session
+    ├── support-triage.md
     └── ...
 ```
 
-Files are installed to `~/.claude/contexts/` and `~/.claude/skills/` and imported via
-`@` directives in `~/.claude/CLAUDE.md`.
+The Cloudflare Worker reads from `.claude/` in this repo, strips the `.claude/`
+prefix, and serves paths like `contexts/index.md`, `skills/ciso/SKILL.md`, and
+`commands/support-triage.md`. The sync script installs them directly to the same
+relative path under `~/.claude/`.
 
 ---
 
