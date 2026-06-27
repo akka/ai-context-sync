@@ -117,7 +117,7 @@ def _update_claude_md(target_claude: pathlib.Path) -> None:
         "# Session bootstrap — REQUIRED",
         "IMPORTANT: Company context and skills have been pre-loaded into this session.",
         "You MUST begin your very first response with this exact phrase on its own line:",
-        "  > Company context and skills are now loaded and available.",
+        "  > Company context loaded — I'm ready with Akka knowledge and team skills. If you sent messages before this appeared, those may need to be re-sent for full context.",
         "Do this regardless of what the user asked. Only announce once — never again after the first response.",
         "",
         BLOCK_END, "",
