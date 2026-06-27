@@ -253,9 +253,76 @@ EOF
 
 elif [[ "$OS" == "Linux" ]]; then
   PYTHON_ABS=$(command -v "${PYTHON}")
-  CRON_LINE="0 8 * * * ${PYTHON_ABS} ${INSTALL_PATH} >> ${INSTALL_DIR}/context-sync.log 2>&1"
-  (crontab -l 2>/dev/null | grep -v "claude-context-sync\|sync_claude_contexts" ; echo "${CRON_LINE}") | crontab -
-  info "Scheduled via cron — runs daily at 08:00."
+
+  # Daily context sync — prefer systemd user timer, fall back to cron
+  if command -v systemctl &>/dev/null && systemctl --user status &>/dev/null 2>&1; then
+    SYSTEMD_DIR="${HOME}/.config/systemd/user"
+    mkdir -p "${SYSTEMD_DIR}"
+
+    cat > "${SYSTEMD_DIR}/akka-claude-context-sync.service" << EOF
+[Unit]
+Description=Akka Claude Context Sync
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=${PYTHON_ABS} ${INSTALL_PATH}
+StandardOutput=append:${INSTALL_DIR}/context-sync.log
+StandardError=append:${INSTALL_DIR}/context-sync.log
+EOF
+
+    cat > "${SYSTEMD_DIR}/akka-claude-context-sync.timer" << EOF
+[Unit]
+Description=Akka Claude Context Sync — daily at 08:00
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now akka-claude-context-sync.timer
+    info "Scheduled via systemd user timer — runs daily at 08:00."
+
+    # Cowork watcher — systemd user service (persistent daemon)
+    if [[ -f "${WATCHER_PATH}" ]]; then
+      cat > "${SYSTEMD_DIR}/akka-claude-cowork-watcher.service" << EOF
+[Unit]
+Description=Akka Claude Cowork Session Watcher
+
+[Service]
+Type=simple
+ExecStart=${PYTHON_ABS} ${WATCHER_PATH}
+Restart=always
+RestartSec=5
+StandardOutput=append:${INSTALL_DIR}/cowork-watcher.log
+StandardError=append:${INSTALL_DIR}/cowork-watcher.log
+
+[Install]
+WantedBy=default.target
+EOF
+
+      systemctl --user daemon-reload
+      systemctl --user enable --now akka-claude-cowork-watcher.service
+      info "Cowork watcher daemon started via systemd."
+    fi
+
+  else
+    # Fallback: cron
+    CRON_LINE="0 8 * * * ${PYTHON_ABS} ${INSTALL_PATH} >> ${INSTALL_DIR}/context-sync.log 2>&1"
+    (crontab -l 2>/dev/null | grep -v "claude-context-sync\|sync_claude_contexts" ; echo "${CRON_LINE}") | crontab -
+    info "Scheduled via cron — runs daily at 08:00."
+
+    # Cowork watcher — background process via cron @reboot
+    if [[ -f "${WATCHER_PATH}" ]]; then
+      WATCHER_CRON="@reboot ${PYTHON_ABS} ${WATCHER_PATH} >> ${INSTALL_DIR}/cowork-watcher.log 2>&1"
+      (crontab -l 2>/dev/null | grep -v "cowork-watcher\|watch_cowork_sessions" ; echo "${WATCHER_CRON}") | crontab -
+      info "Cowork watcher scheduled via @reboot cron entry."
+    fi
+  fi
 else
   warn "Unrecognised OS '${OS}' — skipping scheduler setup. Schedule manually."
 fi

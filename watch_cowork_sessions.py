@@ -6,12 +6,15 @@ Watches for new Claude cowork session directories and copies org context
 from ~/.claude/ into each session's .claude/ directory so the cowork VM
 starts with skills and context available.
 
-Runs as a background daemon via launchd (macOS). Poll interval is
-intentionally short (30s) so new sessions get context before the user
-sends their first prompt.
+Runs as a background daemon. Poll interval is intentionally short (5s)
+so new sessions get context before the user sends their first prompt.
+
+Sessions directory by platform:
+  macOS:   ~/Library/Application Support/Claude/local-agent-mode-sessions/
+  Linux:   ~/.config/Claude/local-agent-mode-sessions/  (XDG_CONFIG_HOME honoured)
+  Windows: %APPDATA%/Claude/local-agent-mode-sessions/
 
 Structure watched:
-  ~/Library/Application Support/Claude/local-agent-mode-sessions/
     <workspace-id>/
       <team-id>/
         local_<session-uuid>/    ← each cowork session
@@ -22,14 +25,28 @@ Structure watched:
 import logging
 import os
 import pathlib
+import platform
 import shutil
 import sys
 import time
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-CLAUDE_DIR   = pathlib.Path.home() / ".claude"
-SESSIONS_DIR = pathlib.Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+CLAUDE_DIR = pathlib.Path.home() / ".claude"
+
+def _sessions_dir() -> pathlib.Path:
+    system = platform.system()
+    if system == "Darwin":
+        return pathlib.Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA", "")
+        return pathlib.Path(appdata) / "Claude" / "local-agent-mode-sessions"
+    else:  # Linux and others
+        xdg = os.environ.get("XDG_CONFIG_HOME", "")
+        base = pathlib.Path(xdg) if xdg else pathlib.Path.home() / ".config"
+        return base / "Claude" / "local-agent-mode-sessions"
+
+SESSIONS_DIR = _sessions_dir()
 
 DIRS_TO_COPY = ["contexts", "skills", "commands"]
 SENTINEL     = "contexts"          # presence of this subdir = already synced
