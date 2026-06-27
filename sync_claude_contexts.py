@@ -16,6 +16,12 @@ Two modes — configure ONE in ~/.claude/context-sync.conf:
     # GITHUB_REPO=akka/org-ai-contexts
     # GITHUB_BRANCH=main
 
+  MODE 3 — Local copy (cowork / hook mode):
+    Pass --local-copy to mirror ~/.claude/ into a project .claude/ directory
+    without any network calls. Intended for use via a UserPromptSubmit hook
+    so cowork sessions get org context at session start and refreshed every
+    --cooldown minutes during long-lived sessions.
+
 Installed layout:
   ~/.claude/
     CLAUDE.md                ← managed @import block prepended by this script
@@ -50,8 +56,9 @@ from typing import Optional, Tuple
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
-DEFAULT_GITHUB_REPO   = "akka/org-ai-contexts"
-DEFAULT_GITHUB_BRANCH = "main"
+DEFAULT_GITHUB_REPO    = "akka/org-ai-contexts"
+DEFAULT_GITHUB_BRANCH  = "main"
+DEFAULT_COOLDOWN_MINS  = 360  # 6 hours — matches cron cadence
 
 CLAUDE_DIR       = pathlib.Path.home() / ".claude"
 CONTEXTS_DIR     = CLAUDE_DIR / "contexts"
@@ -64,6 +71,7 @@ BACKUPS_DIR      = CLAUDE_DIR / "backups"
 MAX_BACKUPS      = 5
 
 CONTEXTS_SUBDIR  = "contexts"
+TIMESTAMP_FILE   = ".sync-timestamp"
 
 SYNC_BLOCK_START = "<!-- claude-context-sync:start -->"
 SYNC_BLOCK_END   = "<!-- claude-context-sync:end -->"
@@ -394,6 +402,137 @@ def update_claude_md(context_paths: list[str], dry_run: bool = False) -> None:
         CLAUDE_MD.write_text(new_content, encoding="utf-8")
         log.info("%s %s", action, CLAUDE_MD)
 
+# ── Mode 3: Local copy (cowork hook) ──────────────────────────────────────────
+
+def _is_within_cooldown(target_dir: pathlib.Path, cooldown_mins: int) -> bool:
+    """Return True if a sync has already run within the cooldown window."""
+    import time
+    ts_file = target_dir / TIMESTAMP_FILE
+    if not ts_file.exists():
+        return False
+    age_mins = (time.time() - ts_file.stat().st_mtime) / 60
+    return age_mins < cooldown_mins
+
+
+def _write_timestamp(target_dir: pathlib.Path) -> None:
+    import time
+    ts_file = target_dir / TIMESTAMP_FILE
+    ts_file.write_text(str(time.time()), encoding="utf-8")
+
+
+def sync_local_copy(target_dir: pathlib.Path, cooldown_mins: int, dry_run: bool) -> None:
+    """
+    Mirror ~/.claude/contexts/, ~/.claude/skills/, and ~/.claude/commands/ into
+    <target_dir>/ and inject a managed @import block into <target_dir>/CLAUDE.md.
+
+    Uses a cooldown timestamp so repeated hook invocations within a session are
+    cheap (no-ops after the first copy until the cooldown expires).
+    """
+    if _is_within_cooldown(target_dir, cooldown_mins):
+        log.info("Local copy skipped — within %d-minute cooldown window.", cooldown_mins)
+        return
+
+    if not CLAUDE_DIR.exists():
+        raise SystemExit(
+            f"[ERROR] ~/.claude/ not found. Run the full sync first to populate it."
+        )
+
+    log.info("Copying org context from %s → %s …", CLAUDE_DIR, target_dir)
+
+    dirs_to_copy = [
+        (CONTEXTS_DIR, target_dir / "contexts"),
+        (SKILLS_DIR,   target_dir / "skills"),
+        (COMMANDS_DIR, target_dir / "commands"),
+    ]
+
+    context_paths: list[str] = []
+
+    for src_dir, dest_dir in dirs_to_copy:
+        if not src_dir.exists():
+            log.debug("  skipping %s (not present in ~/.claude/)", src_dir.name)
+            continue
+        for src_file in src_dir.rglob("*"):
+            if not src_file.is_file():
+                continue
+            rel = src_file.relative_to(CLAUDE_DIR)
+            dest_file = target_dir / rel
+            log.info("  %s", rel)
+            if not dry_run:
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_file, dest_file)
+            # Collect context paths for CLAUDE.md import block
+            if src_dir == CONTEXTS_DIR:
+                # rel is like contexts/context/company.md — strip the leading "contexts/"
+                context_rel = src_file.relative_to(CONTEXTS_DIR)
+                path_str = str(context_rel).replace("\\", "/")
+                if path_str == "index.md":
+                    context_paths.append("index.md")
+                else:
+                    context_paths.append(f"context/{context_rel.name}" if len(context_rel.parts) == 2 else str(context_rel).replace("\\", "/"))
+
+    # Rebuild CLAUDE.md import block in the target dir
+    _update_target_claude_md(target_dir, context_paths, dry_run)
+
+    if not dry_run:
+        _write_timestamp(target_dir)
+
+    log.info("✓ Local copy complete.")
+
+
+def _update_target_claude_md(target_dir: pathlib.Path, context_paths: list[str], dry_run: bool) -> None:
+    """Write the managed sync block into <target_dir>/CLAUDE.md."""
+    target_claude_md = target_dir / "CLAUDE.md"
+
+    # Rebuild import paths relative to the target .claude/ dir
+    block_lines = [
+        SYNC_BLOCK_START,
+        "# Company AI Contexts  (auto-synced — do not edit this section manually)",
+        "",
+    ]
+
+    if "index.md" in context_paths:
+        block_lines.append(f"@contexts/index.md")
+
+    subdir_map: dict[str, list[str]] = {}
+    for path in sorted(context_paths):
+        if path == "index.md":
+            continue
+        top = path.split("/")[0]
+        subdir_map.setdefault(top, []).append(path)
+
+    for subdir in sorted(subdir_map):
+        block_lines.append(f"\n## {subdir.replace('-', ' ').replace('_', ' ').title()}")
+        for path in sorted(subdir_map[subdir]):
+            block_lines.append(f"@contexts/{path}")
+
+    block_lines += ["", SYNC_BLOCK_END, ""]
+    block = "\n".join(block_lines)
+
+    if target_claude_md.exists():
+        existing = target_claude_md.read_text(encoding="utf-8")
+        if SYNC_BLOCK_START in existing:
+            new_content = re.sub(
+                rf"{re.escape(SYNC_BLOCK_START)}.*?{re.escape(SYNC_BLOCK_END)}\n?",
+                block,
+                existing,
+                flags=re.DOTALL,
+            )
+            action = "Updated"
+        else:
+            new_content = block + "\n" + existing
+            action = "Prepended to"
+    else:
+        new_content = block
+        action = "Created"
+
+    if dry_run:
+        log.info("DRY RUN — would write %s:\n%s", target_claude_md, new_content)
+    else:
+        target_claude_md.parent.mkdir(parents=True, exist_ok=True)
+        target_claude_md.write_text(new_content, encoding="utf-8")
+        log.info("%s %s", action, target_claude_md)
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -425,6 +564,20 @@ def main() -> None:
         help=f"GitHub branch (direct mode, default: {DEFAULT_GITHUB_BRANCH})",
     )
     parser.add_argument(
+        "--local-copy", action="store_true",
+        help="Copy from ~/.claude/ into --target-dir without any network calls. "
+             "Intended for use in a UserPromptSubmit hook for cowork sessions.",
+    )
+    parser.add_argument(
+        "--target-dir", metavar="DIR", default=".claude",
+        help="Destination directory for --local-copy (default: .claude in CWD).",
+    )
+    parser.add_argument(
+        "--cooldown", metavar="MINS", type=int, default=DEFAULT_COOLDOWN_MINS,
+        help=f"Skip copy if last run was within this many minutes (default: {DEFAULT_COOLDOWN_MINS}). "
+             "Use 0 to always copy.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Show what would be done without writing any files",
     )
@@ -436,6 +589,11 @@ def main() -> None:
 
     configure_logging(args.verbose)
     config = read_config()
+
+    if args.local_copy:
+        target_dir = pathlib.Path(args.target_dir).expanduser().resolve()
+        sync_local_copy(target_dir, cooldown_mins=args.cooldown, dry_run=args.dry_run)
+        return
 
     source_url = resolve("SOURCE_URL",     args.source_url,   config)
     api_key    = resolve("CONTEXT_API_KEY", args.api_key,      config)

@@ -10,7 +10,7 @@ employee's Claude Code installation.  Runs on a daily schedule.
 ## Architecture
 
 ```
-github.com/akka/ai-assistant-configs  (private repo, bot token)
+github.com/akka/org-ai-contexts  (private repo, bot token)
             │
             │  daily cron (07:00 UTC)
             ▼
@@ -19,13 +19,18 @@ github.com/akka/ai-assistant-configs  (private repo, bot token)
             │
             │  HTTPS  +  Bearer token  (shared API key)
             ▼
-  Employee machines  →  ~/.claude/contexts/
-                        ~/.claude/CLAUDE.md  (auto-updated)
+  Employee machines  →  ~/.claude/contexts/     (daily cron, 08:00 local)
+                        ~/.claude/CLAUDE.md      (auto-updated)
+                              │
+                              │  local copy — no network
+                              ▼
+                        <project>/.claude/       (UserPromptSubmit hook, cowork)
 ```
 
 - The **GitHub bot token** never leaves Cloudflare — stored as a Worker secret.
 - Employees receive a **shared API key** (scoped only to this endpoint, easily rotated).
 - No GitHub account required for employees.
+- **Cowork sessions** copy from the already-synced `~/.claude/` into the project's `.claude/` directory via a hook — no extra network calls.
 
 ---
 
@@ -157,7 +162,25 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/akka/ai-context-sync/m
    - **macOS:** launchd plist at `~/Library/LaunchAgents/io.akka.claude-context-sync.plist`
    - **Linux:** user crontab entry
    - **Windows:** Task Scheduler task `ClaudeContextSync` with `StartWhenAvailable`
-4. Runs an initial sync immediately
+4. Injects a `UserPromptSubmit` hook into `~/.claude/settings.json` for cowork support
+5. Runs an initial sync immediately
+
+### Cowork support
+
+The installer adds a `UserPromptSubmit` hook that runs automatically in every Claude Code
+session (including cowork). On the **first prompt of a session** it copies org context from
+`~/.claude/` into the project's `.claude/` directory. Subsequent prompts re-copy only if
+the last copy was more than **6 hours** ago (matching the cron cadence).
+
+Add `.claude/.sync-timestamp` and any org context subdirectories to your project's
+`.gitignore` to avoid committing ephemeral session files:
+
+```gitignore
+.claude/.sync-timestamp
+.claude/contexts/
+.claude/skills/
+.claude/commands/
+```
 
 ### Employee config file
 
@@ -247,6 +270,9 @@ sync_claude_contexts.py [options]
   --github-token TOK  Direct GitHub mode — admin/fallback only
   --repo OWNER/REPO   GitHub repo for direct mode
   --branch BRANCH     Branch for direct mode
+  --local-copy        Copy from ~/.claude/ into --target-dir (no network, for cowork hook)
+  --target-dir DIR    Destination for --local-copy (default: .claude in CWD)
+  --cooldown MINS     Skip copy if last run was within N minutes (default: 360)
   --dry-run           Show what would be done without writing files
   -v, --verbose       Debug logging
 ```

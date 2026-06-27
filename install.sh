@@ -164,6 +164,76 @@ else
   warn "Unrecognised OS '${OS}' — skipping scheduler setup. Schedule manually."
 fi
 
+# ── Claude Code hook (cowork support) ────────────────────────────────────────
+# Inject a UserPromptSubmit hook into ~/.claude/settings.json so cowork sessions
+# automatically copy org context into the project .claude/ directory.
+
+SETTINGS_FILE="${INSTALL_DIR}/settings.json"
+HOOK_CMD="${PYTHON_ABS} ${INSTALL_PATH} --local-copy --target-dir .claude"
+
+inject_hook() {
+  if [[ ! -f "${SETTINGS_FILE}" ]]; then
+    cat > "${SETTINGS_FILE}" << EOF
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOOK_CMD}"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+    info "Created ${SETTINGS_FILE} with cowork hook."
+    return
+  fi
+
+  # Check if the hook is already present
+  if grep -q "local-copy" "${SETTINGS_FILE}" 2>/dev/null; then
+    info "Cowork hook already present in ${SETTINGS_FILE} — skipping."
+    return
+  fi
+
+  # settings.json exists but doesn't have our hook — ask Python to merge it
+  "${PYTHON}" - << PYEOF
+import json, pathlib, sys
+
+settings_file = pathlib.Path("${SETTINGS_FILE}")
+hook_cmd = "${HOOK_CMD}"
+
+try:
+    settings = json.loads(settings_file.read_text(encoding="utf-8"))
+except json.JSONDecodeError as e:
+    print(f"  [WARN]  Could not parse {settings_file}: {e}", file=sys.stderr)
+    print(f"  [WARN]  Add the cowork hook manually — see README for details.", file=sys.stderr)
+    sys.exit(0)
+
+hook_entry = {"type": "command", "command": hook_cmd}
+hooks = settings.setdefault("hooks", {})
+submit_hooks = hooks.setdefault("UserPromptSubmit", [])
+
+# Check for an existing matcher block or bare list
+if submit_hooks and isinstance(submit_hooks[0], dict) and "hooks" in submit_hooks[0]:
+    # Standard matcher format — append to first matcher's hooks list
+    existing = submit_hooks[0]["hooks"]
+    if not any(h.get("command", "").find("local-copy") != -1 for h in existing):
+        existing.append(hook_entry)
+else:
+    # No existing matcher — wrap in one
+    submit_hooks.append({"hooks": [hook_entry]})
+
+settings_file.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+print(f"  [INFO]  Updated {settings_file} with cowork hook.")
+PYEOF
+}
+
+inject_hook
+
 # ── First run ─────────────────────────────────────────────────────────────────
 if [[ -n "${CONTEXT_API_KEY}" ]]; then
   echo ""
