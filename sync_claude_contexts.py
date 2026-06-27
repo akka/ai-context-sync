@@ -465,7 +465,7 @@ def ensure_cowork_hook(dry_run: bool = False) -> None:
     """
     import sys
 
-    hook_cmd = f"{sys.executable} {__file__} --local-copy --target-dir .claude"
+    hook_cmd = f'{sys.executable} {__file__} --local-copy --target-dir "$PWD/.claude"'
 
     hook_entry = {
         "type": "command",
