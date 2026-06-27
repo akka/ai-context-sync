@@ -13,7 +13,7 @@ Two modes — configure ONE in ~/.claude/context-sync.conf:
 
   MODE 2 — Direct GitHub access (admin / fallback):
     GITHUB_TOKEN=<bot PAT with contents:read>
-    # GITHUB_REPO=akka/ai-context-sync
+    # GITHUB_REPO=akka/org-ai-contexts
     # GITHUB_BRANCH=main
 
   MODE 3 — Local copy (cowork / hook mode):
@@ -56,9 +56,8 @@ from typing import Optional
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
-DEFAULT_GITHUB_REPO    = "akka/ai-context-sync"
+DEFAULT_GITHUB_REPO    = "akka/org-ai-contexts"
 DEFAULT_GITHUB_BRANCH  = "main"
-GITHUB_CONTENT_PREFIX  = ".claude/"          # content lives under .claude/ in the repo
 DEFAULT_COOLDOWN_MINS  = 360  # 6 hours — matches cron cadence
 
 SCRIPT_REPO    = "akka/ai-context-sync"
@@ -298,8 +297,7 @@ def sync_from_github(
         item for item in tree_data["tree"]
         if item["type"] == "blob"
         and item["path"].endswith(".md")
-        and item["path"].startswith(GITHUB_CONTENT_PREFIX)
-        and item["path"][len(GITHUB_CONTENT_PREFIX):].split("/")[0] in MANAGED_TOPS
+        and item["path"].split("/")[0] in MANAGED_TOPS
     ]
 
     if not md_blobs:
@@ -313,9 +311,8 @@ def sync_from_github(
     context_paths: list[str] = []
 
     for blob in md_blobs:
-        repo_path: str = blob["path"]
-        path = repo_path[len(GITHUB_CONTENT_PREFIX):]   # strip .claude/ prefix
-        raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{repo_path}"
+        path: str = blob["path"]
+        raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
         log.info("  downloading %s", path)
         content = http_get(raw_url, {
             "Authorization": f"Bearer {token}",
