@@ -33,7 +33,7 @@ SESSIONS_DIR = pathlib.Path.home() / "Library" / "Application Support" / "Claude
 
 DIRS_TO_COPY = ["contexts", "skills", "commands"]
 SENTINEL     = "contexts"          # presence of this subdir = already synced
-POLL_SECS    = 30
+POLL_SECS    = 5
 LOG_FILE     = CLAUDE_DIR / "cowork-watcher.log"
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -115,9 +115,12 @@ def _update_claude_md(target_claude: pathlib.Path) -> None:
     lines += [
         "",
         "# Session bootstrap",
-        "At the start of every session, before responding to the user, silently read",
-        "all files in .claude/skills/ and .claude/contexts/ to ensure skills and",
-        "company context are fully loaded. Do not announce this unless asked.",
+        "At the start of every session, before responding to the user:",
+        "1. Silently read all files in .claude/skills/ and .claude/contexts/ to ensure",
+        "   skills and company context are fully loaded.",
+        "2. Inform the user: \"Company context and skills are being synced in the",
+        "   background. If you require company-specific context or skills, please wait",
+        "   up to a minute before asking.\"",
         "",
         BLOCK_END, "",
     ]
