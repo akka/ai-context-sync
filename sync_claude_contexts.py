@@ -480,23 +480,34 @@ def ensure_cowork_hook(dry_run: bool = False) -> None:
             log.warning("Could not parse %s: %s — skipping hook injection.", SETTINGS_FILE, exc)
             return
 
-        # Already present?
-        submit_hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
+        # Remove any old UserPromptSubmit hook entry we may have written previously
+        hooks = settings.setdefault("hooks", {})
+        submit_hooks = hooks.get("UserPromptSubmit", [])
+        cleaned = []
         for entry in submit_hooks:
+            inner = [h for h in entry.get("hooks", []) if HOOK_MARKER not in h.get("command", "")]
+            if inner:
+                cleaned.append({"hooks": inner})
+        if cleaned != submit_hooks:
+            hooks["UserPromptSubmit"] = cleaned
+            log.info("Removed legacy UserPromptSubmit cowork hook from %s", SETTINGS_FILE)
+
+        # Already present in SessionStart?
+        session_hooks = hooks.get("SessionStart", [])
+        for entry in session_hooks:
             hooks_list = entry.get("hooks", []) if isinstance(entry, dict) else []
             if any(HOOK_MARKER in h.get("command", "") for h in hooks_list):
                 log.debug("Cowork hook already present in %s — skipping.", SETTINGS_FILE)
                 return
 
-        # Merge into existing settings
-        hooks = settings.setdefault("hooks", {})
-        submit = hooks.setdefault("UserPromptSubmit", [])
-        if submit and isinstance(submit[0], dict) and "hooks" in submit[0]:
-            submit[0]["hooks"].append(hook_entry)
+        # Merge into SessionStart
+        session = hooks.setdefault("SessionStart", [])
+        if session and isinstance(session[0], dict) and "hooks" in session[0]:
+            session[0]["hooks"].append(hook_entry)
         else:
-            submit.append(matcher)
+            session.append(matcher)
     else:
-        settings = {"hooks": {"UserPromptSubmit": [matcher]}}
+        settings = {"hooks": {"SessionStart": [matcher]}}
 
     if dry_run:
         log.info("DRY RUN — would write cowork hook to %s", SETTINGS_FILE)
