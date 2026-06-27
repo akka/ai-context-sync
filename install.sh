@@ -135,6 +135,8 @@ if [[ "$OS" == "Darwin" ]]; then
   PLIST_DIR="${HOME}/Library/LaunchAgents"
   PLIST_FILE="${PLIST_DIR}/io.akka.claude-context-sync.plist"
   WATCHER_PLIST_FILE="${PLIST_DIR}/io.akka.claude-cowork-watcher.plist"
+  WATCHPATH_PLIST_FILE="${PLIST_DIR}/io.akka.claude-cowork-watchpath.plist"
+  SESSIONS_DIR="${HOME}/Library/Application Support/Claude/local-agent-mode-sessions"
   mkdir -p "${PLIST_DIR}"
   PYTHON_ABS=$(command -v "${PYTHON}")
 
@@ -211,6 +213,40 @@ EOF
     launchctl unload "${WATCHER_PLIST_FILE}" 2>/dev/null || true
     launchctl load -w "${WATCHER_PLIST_FILE}"
     info "Cowork watcher daemon started. Plist: ${WATCHER_PLIST_FILE}"
+
+    # WatchPaths plist — fires instantly when a new session directory appears
+    cat > "${WATCHPATH_PLIST_FILE}" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.akka.claude-cowork-watchpath</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>${PYTHON_ABS}</string>
+    <string>${WATCHER_PATH}</string>
+    <string>--once</string>
+  </array>
+
+  <key>WatchPaths</key>
+  <array>
+    <string>${SESSIONS_DIR}</string>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>${INSTALL_DIR}/cowork-watcher.log</string>
+  <key>StandardErrorPath</key>
+  <string>${INSTALL_DIR}/cowork-watcher.log</string>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "${WATCHPATH_PLIST_FILE}" 2>/dev/null || true
+    launchctl load -w "${WATCHPATH_PLIST_FILE}"
+    info "Cowork WatchPaths trigger installed. Plist: ${WATCHPATH_PLIST_FILE}"
   else
     warn "Cowork watcher not installed — skipping daemon setup."
   fi

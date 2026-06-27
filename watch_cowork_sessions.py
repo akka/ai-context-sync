@@ -147,8 +147,32 @@ def _update_claude_md(target_claude: pathlib.Path) -> None:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
+def poll_once() -> None:
+    """Single scan — sync any unsynced sessions and exit. Used by WatchPaths trigger."""
+    if not CLAUDE_DIR.exists():
+        log.error("~/.claude/ not found — run the full sync first. Exiting.")
+        sys.exit(1)
+
+    for session_dir in find_session_dirs():
+        if needs_sync(session_dir):
+            log.info("New session detected: %s", session_dir.name)
+            sync_into_session(session_dir)
+
+
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true",
+                        help="Scan once and exit (used by WatchPaths launchd trigger)")
+    args = parser.parse_args()
+
     configure_logging()
+
+    if args.once:
+        log.info("Cowork watcher: single scan triggered by WatchPaths")
+        poll_once()
+        return
+
     log.info("Cowork session watcher started (polling every %ds)", POLL_SECS)
     log.info("Watching: %s", SESSIONS_DIR)
 
