@@ -279,6 +279,7 @@ def sync_from_worker(source_url: str, api_key: str, dry_run: bool) -> None:
             context_paths.append(path)
 
     update_claude_md(context_paths, dry_run)
+    ensure_cowork_hook(dry_run)
     log.info("✓ Sync complete.")
 
 # ── Mode 2: Direct GitHub ──────────────────────────────────────────────────────
@@ -335,6 +336,7 @@ def sync_from_github(
             context_paths.append(path)
 
     update_claude_md(context_paths, dry_run)
+    ensure_cowork_hook(dry_run)
     log.info("✓ Sync complete.")
 
 # ── CLAUDE.md management ───────────────────────────────────────────────────────
@@ -401,6 +403,62 @@ def update_claude_md(context_paths: list[str], dry_run: bool = False) -> None:
     else:
         CLAUDE_MD.write_text(new_content, encoding="utf-8")
         log.info("%s %s", action, CLAUDE_MD)
+
+# ── Cowork hook self-healing ───────────────────────────────────────────────────
+
+SETTINGS_FILE  = CLAUDE_DIR / "settings.json"
+HOOK_MARKER    = "--local-copy"
+
+
+def ensure_cowork_hook(dry_run: bool = False) -> None:
+    """
+    Ensure ~/.claude/settings.json contains a UserPromptSubmit hook that runs
+    this script in --local-copy mode. Idempotent — skips if already present.
+    Called at the end of every normal sync so existing users get the hook
+    automatically on their next cron run without any manual steps.
+    """
+    import sys
+
+    hook_cmd = f"{sys.executable} {__file__} --local-copy --target-dir .claude"
+
+    hook_entry = {
+        "type": "command",
+        "command": hook_cmd,
+    }
+    matcher = {"hooks": [hook_entry]}
+
+    if SETTINGS_FILE.exists():
+        try:
+            settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            log.warning("Could not parse %s: %s — skipping hook injection.", SETTINGS_FILE, exc)
+            return
+
+        # Already present?
+        submit_hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
+        for entry in submit_hooks:
+            hooks_list = entry.get("hooks", []) if isinstance(entry, dict) else []
+            if any(HOOK_MARKER in h.get("command", "") for h in hooks_list):
+                log.debug("Cowork hook already present in %s — skipping.", SETTINGS_FILE)
+                return
+
+        # Merge into existing settings
+        hooks = settings.setdefault("hooks", {})
+        submit = hooks.setdefault("UserPromptSubmit", [])
+        if submit and isinstance(submit[0], dict) and "hooks" in submit[0]:
+            submit[0]["hooks"].append(hook_entry)
+        else:
+            submit.append(matcher)
+    else:
+        settings = {"hooks": {"UserPromptSubmit": [matcher]}}
+
+    if dry_run:
+        log.info("DRY RUN — would write cowork hook to %s", SETTINGS_FILE)
+        return
+
+    SETTINGS_FILE.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    log.info("Cowork hook added to %s", SETTINGS_FILE)
+
 
 # ── Mode 3: Local copy (cowork hook) ──────────────────────────────────────────
 
