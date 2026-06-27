@@ -63,7 +63,9 @@ DEFAULT_COOLDOWN_MINS  = 360  # 6 hours — matches cron cadence
 SCRIPT_REPO    = "akka/ai-context-sync"
 SCRIPT_BRANCH  = "main"
 SCRIPT_NAME    = "sync_claude_contexts.py"
+WATCHER_NAME   = "watch_cowork_sessions.py"
 SCRIPT_URL     = f"https://raw.githubusercontent.com/{SCRIPT_REPO}/{SCRIPT_BRANCH}/{SCRIPT_NAME}"
+WATCHER_URL    = f"https://raw.githubusercontent.com/{SCRIPT_REPO}/{SCRIPT_BRANCH}/{WATCHER_NAME}"
 
 CLAUDE_DIR       = pathlib.Path.home() / ".claude"
 CONTEXTS_DIR     = CLAUDE_DIR / "contexts"
@@ -450,6 +452,34 @@ def self_update(dry_run: bool = False) -> None:
     os.execv(sys.executable, [sys.executable, str(this_file)] + sys.argv[1:])
 
 
+def self_update_watcher() -> None:
+    """Update the cowork watcher script if a newer version is available."""
+    watcher_file = CLAUDE_DIR / WATCHER_NAME
+    if not watcher_file.exists():
+        return
+
+    log.debug("Checking for watcher update from %s …", WATCHER_URL)
+    try:
+        latest = http_get(WATCHER_URL, {"User-Agent": "claude-context-sync/1.0"})
+    except SystemExit as exc:
+        log.warning("Watcher update check failed: %s — skipping.", exc)
+        return
+
+    if latest == watcher_file.read_bytes():
+        log.debug("Watcher script is up to date.")
+        return
+
+    log.info("New version of %s available — updating…", WATCHER_NAME)
+    tmp = watcher_file.with_suffix(".tmp")
+    try:
+        tmp.write_bytes(latest)
+        tmp.replace(watcher_file)
+        log.info("Watcher script updated.")
+    except OSError as exc:
+        log.warning("Watcher update failed: %s", exc)
+        tmp.unlink(missing_ok=True)
+
+
 # ── Cowork hook self-healing ───────────────────────────────────────────────────
 
 SETTINGS_FILE  = CLAUDE_DIR / "settings.json"
@@ -708,6 +738,7 @@ def main() -> None:
     # new version. Skipped in --local-copy mode (no network, hook path).
     if not args.local_copy and not args.dry_run:
         self_update()
+        self_update_watcher()
 
     config = read_config()
 

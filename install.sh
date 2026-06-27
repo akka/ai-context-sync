@@ -12,9 +12,12 @@
 set -euo pipefail
 
 SCRIPT_NAME="sync_claude_contexts.py"
+WATCHER_NAME="watch_cowork_sessions.py"
 SCRIPT_SRC="https://raw.githubusercontent.com/akka/ai-context-sync/main/${SCRIPT_NAME}"
+WATCHER_SRC="https://raw.githubusercontent.com/akka/ai-context-sync/main/${WATCHER_NAME}"
 INSTALL_DIR="${HOME}/.claude"
 INSTALL_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
+WATCHER_PATH="${INSTALL_DIR}/${WATCHER_NAME}"
 CONFIG_FILE="${INSTALL_DIR}/context-sync.conf"
 
 CONTEXT_API_KEY=""
@@ -89,6 +92,23 @@ fi
 chmod +x "${INSTALL_PATH}"
 info "Installed script to ${INSTALL_PATH}"
 
+# Download (or copy if running locally) the cowork watcher
+if [[ -f "./${WATCHER_NAME}" ]]; then
+  info "Copying ${WATCHER_NAME} from current directory…"
+  cp "./${WATCHER_NAME}" "${WATCHER_PATH}"
+else
+  info "Downloading ${WATCHER_NAME}…"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "${WATCHER_SRC}" -o "${WATCHER_PATH}"
+  elif command -v wget &>/dev/null; then
+    wget -q "${WATCHER_SRC}" -O "${WATCHER_PATH}"
+  else
+    warn "Could not download ${WATCHER_NAME} — cowork session sync unavailable."
+  fi
+fi
+chmod +x "${WATCHER_PATH}"
+info "Installed watcher to ${WATCHER_PATH}"
+
 # Write config file
 if [[ -n "${CONTEXT_API_KEY}" ]]; then
   cat > "${CONFIG_FILE}" << EOF
@@ -114,9 +134,11 @@ OS="$(uname -s)"
 if [[ "$OS" == "Darwin" ]]; then
   PLIST_DIR="${HOME}/Library/LaunchAgents"
   PLIST_FILE="${PLIST_DIR}/io.akka.claude-context-sync.plist"
+  WATCHER_PLIST_FILE="${PLIST_DIR}/io.akka.claude-cowork-watcher.plist"
   mkdir -p "${PLIST_DIR}"
   PYTHON_ABS=$(command -v "${PYTHON}")
 
+  # Daily context sync plist
   cat > "${PLIST_FILE}" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -154,6 +176,44 @@ EOF
   launchctl unload "${PLIST_FILE}" 2>/dev/null || true
   launchctl load -w "${PLIST_FILE}"
   info "Scheduled via launchd — runs daily at 08:00. Plist: ${PLIST_FILE}"
+
+  # Cowork session watcher plist (persistent daemon, polls every 30s)
+  if [[ -f "${WATCHER_PATH}" ]]; then
+    cat > "${WATCHER_PLIST_FILE}" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.akka.claude-cowork-watcher</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>${PYTHON_ABS}</string>
+    <string>${WATCHER_PATH}</string>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>${INSTALL_DIR}/cowork-watcher.log</string>
+  <key>StandardErrorPath</key>
+  <string>${INSTALL_DIR}/cowork-watcher.log</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "${WATCHER_PLIST_FILE}" 2>/dev/null || true
+    launchctl load -w "${WATCHER_PLIST_FILE}"
+    info "Cowork watcher daemon started. Plist: ${WATCHER_PLIST_FILE}"
+  else
+    warn "Cowork watcher not installed — skipping daemon setup."
+  fi
 
 elif [[ "$OS" == "Linux" ]]; then
   PYTHON_ABS=$(command -v "${PYTHON}")
