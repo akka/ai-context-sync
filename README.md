@@ -11,7 +11,7 @@ in sync automatically.
 ## Architecture
 
 ```
-github.com/akka/ai-context-sync  (this repo — .claude/ subtree is the source)
+github.com/akka/org-ai-contexts  (content repo — structured to mirror ~/.claude/)
             │
             │  daily cron (07:00 UTC)
             ▼
@@ -37,35 +37,32 @@ github.com/akka/ai-context-sync  (this repo — .claude/ subtree is the source)
 
 ---
 
-## Content layout
+## Content layout (`akka/org-ai-contexts`)
 
-Content lives in the `.claude/` subdirectory of this repo. Its structure mirrors
-exactly what gets installed under `~/.claude/` on employee machines — no path
+Content lives in the `akka/org-ai-contexts` repo, structured to mirror exactly
+what gets installed under `~/.claude/` on employee machines — no path
 transformation is needed.
 
 ```
-.claude/
-├── contexts/
-│   ├── index.md            ← loaded in every session
-│   └── context/
-│       ├── company.md
-│       ├── platform.md
-│       └── ...
-├── skills/                 ← loaded based on directory/project context
-│   ├── engineering/
-│   │   └── SKILL.md
-│   ├── marketing/
-│   │   └── SKILL.md
-│   └── ...
-└── commands/               ← slash commands available in every session
-    ├── support-triage.md
+contexts/
+├── index.md            ← loaded in every session
+└── context/
+    ├── company.md
+    ├── platform.md
     └── ...
+skills/                 ← loaded based on directory/project context
+├── engineering/
+│   └── SKILL.md
+├── marketing/
+│   └── SKILL.md
+└── ...
+commands/               ← slash commands available in every session
+├── support-triage.md
+└── ...
 ```
 
-The Cloudflare Worker reads from `.claude/` in this repo, strips the `.claude/`
-prefix, and serves paths like `contexts/index.md`, `skills/ciso/SKILL.md`, and
-`commands/support-triage.md`. The sync script installs them directly to the same
-relative path under `~/.claude/`.
+The Cloudflare Worker reads these paths directly and serves them as-is.
+The sync script installs each file to the same relative path under `~/.claude/`.
 
 ---
 
