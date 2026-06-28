@@ -52,7 +52,7 @@ import shutil
 import sys
 import urllib.error
 import urllib.request
-from typing import Optional, Tuple
+from typing import Optional
 
 # ── Defaults ───────────────────────────────────────────────────────────────────
 
@@ -141,54 +141,33 @@ def http_get(url: str, headers: dict[str, str]) -> bytes:
     except urllib.error.URLError as exc:
         raise SystemExit(f"[ERROR] Network error: {exc.reason}") from exc
 
-# ── File classification ────────────────────────────────────────────────────────
+# ── File install ───────────────────────────────────────────────────────────────
 
-def has_skill_frontmatter(content: str) -> bool:
-    """Return True if the file has a YAML frontmatter block containing 'name:'."""
-    if not content.startswith("---"):
-        return False
-    end = content.find("\n---", 3)
-    if end == -1:
-        return False
-    frontmatter = content[3:end]
-    return bool(re.search(r"^name:\s*\S", frontmatter, re.MULTILINE))
+# Top-level directories under ~/.claude/ that we manage.
+MANAGED_TOPS = {"contexts", "skills", "commands"}
 
 
-def classify_file(path: str, content: str) -> Optional[Tuple[str, pathlib.Path]]:
+def dest_for(path: str) -> Optional[pathlib.Path]:
     """
-    Return (kind, dest_path) for a repo path, or None to skip.
+    Map a manifest path (relative to ~/.claude/) to its install destination.
+    Returns None for paths that should be skipped:
+      - not under a managed top-level directory (contexts/, skills/, commands/)
+      - README files (repo navigation, not content)
 
-    Kinds:
-      "context"  → ~/.claude/contexts/<path>       (always-on @import)
-      "skill"    → ~/.claude/skills/<name>/SKILL.md
-      "command"  → ~/.claude/commands/<stem>.md
+    The source repo stores content under .claude/ already structured to mirror
+    ~/.claude/ — no transformation needed:
+      contexts/index.md           → ~/.claude/contexts/index.md
+      contexts/context/company.md → ~/.claude/contexts/context/company.md
+      skills/ciso/SKILL.md        → ~/.claude/skills/ciso/SKILL.md
+      commands/support-triage.md  → ~/.claude/commands/support-triage.md
     """
-    parts = path.split("/")
-    top   = parts[0]
-    name  = pathlib.Path(path).stem
-
-    # Root-level index.md only — navigation guide, always-on
-    if path == "index.md":
-        return ("context", CONTEXTS_DIR / "index.md")
-
-    # context/ directory → always-on context
-    if top == "context" and path.endswith(".md"):
-        return ("context", CONTEXTS_DIR / pathlib.Path(path))
-
-    # skills/ directory → ~/.claude/skills/<name>/SKILL.md (if has frontmatter)
-    if top == "skills" and path.endswith(".md"):
-        if name in ("overview", "README", "readme"):
-            return None
-        if not has_skill_frontmatter(content):
-            log.debug("  skipping %s (no skill frontmatter)", path)
-            return None
-        return ("skill", SKILLS_DIR / name / "SKILL.md")
-
-    # prompts/ directory → ~/.claude/commands/<name>.md
-    if top == "prompts" and path.endswith(".md"):
-        return ("command", COMMANDS_DIR / f"{name}.md")
-
-    return None
+    top = path.split("/")[0]
+    if top not in MANAGED_TOPS:
+        return None
+    stem = pathlib.Path(path).stem.lower()
+    if stem == "readme":
+        return None
+    return CLAUDE_DIR / path
 
 # ── Backup ─────────────────────────────────────────────────────────────────────
 
@@ -241,18 +220,18 @@ def backup_existing_files(dry_run: bool) -> None:
 
 # ── Install helpers ────────────────────────────────────────────────────────────
 
-def install_file(path: str, content: str, dry_run: bool) -> Optional[Tuple[str, pathlib.Path]]:
-    """Classify and write a single file. Returns (kind, dest) or None if skipped."""
-    result = classify_file(path, content)
-    if result is None:
+def install_file(path: str, content: str, dry_run: bool) -> Optional[pathlib.Path]:
+    """Write a single file to ~/.claude/<path>. Returns dest or None if skipped."""
+    dest = dest_for(path)
+    if dest is None:
+        log.debug("  skipping %s (not a managed path)", path)
         return None
 
-    kind, dest = result
-    log.info("  [%s] %s → %s", kind, path, dest)
+    log.info("  %s → %s", path, dest)
     if not dry_run:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
-    return kind, dest
+    return dest
 
 
 # ── Mode 1: Cloudflare Worker ──────────────────────────────────────────────────
@@ -281,8 +260,8 @@ def sync_from_worker(source_url: str, api_key: str, dry_run: bool) -> None:
 
     for path, meta in files.items():
         content: str = meta["content"]
-        result = install_file(path, content, dry_run)
-        if result and result[0] == "context":
+        dest = install_file(path, content, dry_run)
+        if dest and path.startswith("contexts/"):
             context_paths.append(path)
 
     update_claude_md(context_paths, dry_run)
@@ -316,11 +295,13 @@ def sync_from_github(
 
     md_blobs = [
         item for item in tree_data["tree"]
-        if item["type"] == "blob" and item["path"].endswith(".md")
+        if item["type"] == "blob"
+        and item["path"].endswith(".md")
+        and item["path"].split("/")[0] in MANAGED_TOPS
     ]
 
     if not md_blobs:
-        log.warning("No .md files found in repository — nothing to sync.")
+        log.warning("No managed .md files found in repository — nothing to sync.")
         return
 
     log.info("Found %d .md file(s)", len(md_blobs))
@@ -338,8 +319,8 @@ def sync_from_github(
             "User-Agent": "claude-context-sync/1.0",
         }).decode("utf-8")
 
-        result = install_file(path, content, dry_run)
-        if result and result[0] == "context":
+        dest = install_file(path, content, dry_run)
+        if dest and path.startswith("contexts/"):
             context_paths.append(path)
 
     update_claude_md(context_paths, dry_run)
@@ -348,15 +329,13 @@ def sync_from_github(
 
 # ── CLAUDE.md management ───────────────────────────────────────────────────────
 
-def _context_import_path(repo_path: str) -> str:
-    """Convert a repo path to the @import path relative to ~/.claude/."""
-    if repo_path == "index.md":
-        return f"{CONTEXTS_SUBDIR}/index.md"
-    # repo path is like "context/company.md" → contexts/context/company.md
-    return f"{CONTEXTS_SUBDIR}/{repo_path}"
-
-
 def build_sync_block(context_paths: list[str]) -> str:
+    """
+    Build the managed @import block for CLAUDE.md.
+
+    context_paths are already relative to ~/.claude/ (e.g. contexts/index.md,
+    contexts/context/company.md) so they are used as @import paths directly.
+    """
     lines = [
         SYNC_BLOCK_START,
         "# Company AI Contexts  (auto-synced — do not edit this section manually)",
@@ -364,21 +343,24 @@ def build_sync_block(context_paths: list[str]) -> str:
     ]
 
     # index.md first if present
-    if "index.md" in context_paths:
-        lines.append(f"@{_context_import_path('index.md')}")
+    index = "contexts/index.md"
+    if index in context_paths:
+        lines.append(f"@{index}")
 
-    # Group remaining by subdirectory
+    # Group remaining by subdirectory under contexts/
     subdir_map: dict[str, list[str]] = {}
     for path in sorted(context_paths):
-        if path == "index.md":
+        if path == index:
             continue
-        top = path.split("/")[0]
-        subdir_map.setdefault(top, []).append(path)
+        parts = path.split("/")
+        subdir = parts[1] if len(parts) > 2 else ""
+        subdir_map.setdefault(subdir, []).append(path)
 
     for subdir in sorted(subdir_map):
-        lines.append(f"\n## {subdir.replace('-', ' ').replace('_', ' ').title()}")
+        if subdir:
+            lines.append(f"\n## {subdir.replace('-', ' ').replace('_', ' ').title()}")
         for path in sorted(subdir_map[subdir]):
-            lines.append(f"@{_context_import_path(path)}")
+            lines.append(f"@{path}")
 
     lines.append("")
     lines.append(SYNC_BLOCK_END)
